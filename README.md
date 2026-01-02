@@ -49,8 +49,12 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 - Click on map to set start location
 - Click on map to set end location
 - Click on map to add via points (waypoints)
+- **Multiple via points support**: Add unlimited via points, all are included in route calculation
+- Via points are processed in order: start → via1 → via2 → ... → viaN → destination
+- Remove individual via points from the list
 - Reverse geocoding for clicked locations
 - Visual markers for all route points
+- **Calculation cancellation**: If you change inputs during calculation, the old calculation is automatically cancelled and a new one starts
 
 ### Water Points
 - Automatic detection of drinking water locations
@@ -126,7 +130,9 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 4. Enter start and destination addresses (or click on map)
 5. Set departure time
 6. For trucks: Enter total weight, axle load, and number of axles
-7. Click "Calculate Route"
+7. (Optional) Add via points by clicking "Via Point" button and clicking on the map
+8. Click "Calculate Route"
+9. **Note**: You can change inputs (addresses, via points, etc.) during calculation - the old calculation will be automatically cancelled and a new one will start
 
 ### Map Clicking
 
@@ -139,9 +145,12 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 
 ### Via Points
 
-- Add multiple waypoints by clicking "Via Point" mode and clicking on the map
+- **Unlimited via points**: Add as many waypoints as needed
+- Add via points by clicking "Via Point" mode and clicking on the map
 - Via points appear in a list with remove buttons
-- Routes will pass through all via points in order
+- Routes will pass through all via points in the order they were added: start → via1 → via2 → ... → viaN → destination
+- Via points are preserved when routes are recalculated
+- When route optimization adds avoidance waypoints, original via point order is maintained
 
 ### GPX Export
 
@@ -218,6 +227,20 @@ The application implements rate limiting for Nominatim requests:
 - **Blue**: Drinking water points
 - **Green**: Huts and shelters near stops
 - **Yellow**: Safety warnings (unsafe roads)
+
+## Technical Features
+
+### Route Calculation
+- **Multiple routing services**: OSRM (default) and OpenRouteService (optional)
+- **Multiple via points**: Supports unlimited via points in route calculation
+- **Calculation cancellation**: Automatically cancels old calculations when inputs change
+- **Route optimization**: For hikers/cyclists, automatically finds safest routes avoiding unsafe roads
+- **Error handling**: Graceful error handling with user-friendly messages
+
+### State Management
+- **Calculation tracking**: Prevents race conditions when multiple calculations are triggered
+- **Via point management**: Maintains order and allows individual removal
+- **UI state**: Loading states, button disabling, and progress indicators
 
 ## File Structure
 

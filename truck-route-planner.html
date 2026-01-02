@@ -655,6 +655,8 @@
         let addedWaterPoints = []; // Track water points to ensure minimum distance
         let addedHuts = []; // Track huts/shelters to ensure minimum distance
         let orsApiKey = ''; // OpenRouteService API key (optional)
+        let isCalculating = false; // Flag to track if route calculation is in progress
+        let calculationId = 0; // Incrementing ID to track calculation generations
 
         // Country-specific rules (for trucks/cars)
         const COUNTRY_RULES = {
@@ -1044,6 +1046,7 @@
         }
 
         // Get route from OpenRouteService (supports road exclusions)
+        // Supports multiple via points - all via points are included in order: start -> via1 -> via2 -> ... -> viaN -> destination
         async function getRouteOpenRouteService(startLat, startLon, destLat, destLon, viaPoints = [], vehicleType) {
             try {
                 let profile;
@@ -1056,6 +1059,7 @@
                 }
                 
                 // Build coordinates array: [lon, lat] format
+                // Order: start -> all via points (in order) -> destination
                 const coordinates = [[startLon, startLat]];
                 viaPoints.forEach(via => {
                     coordinates.push([via.lon, via.lat]);
@@ -1124,6 +1128,7 @@
         }
 
         // Get route from OSRM (supports multiple waypoints)
+        // Supports multiple via points - all via points are included in order: start -> via1 -> via2 -> ... -> viaN -> destination
         async function getRoute(startLat, startLon, destLat, destLon, viaPoints = [], alternatives = false) {
             try {
                 let profile;
@@ -1135,7 +1140,8 @@
                     profile = 'driving';
                 }
                 
-                // Build waypoints string: start;via1;via2;...;end
+                // Build waypoints string: start;via1;via2;...;viaN;destination
+                // Order: start -> all via points (in order) -> destination
                 let waypoints = `${startLon},${startLat}`;
                 viaPoints.forEach(via => {
                     waypoints += `;${via.lon},${via.lat}`;
@@ -1504,14 +1510,54 @@
                 if (avoidanceWaypoints.length > 0) {
                     console.log(`Adding ${avoidanceWaypoints.length} waypoints to avoid unsafe roads...`);
                     
-                    // Combine original via points with avoidance waypoints
-                    const allViaPoints = [...viaPoints, ...avoidanceWaypoints];
-                    // Sort by distance along route to maintain order
-                    allViaPoints.sort((a, b) => {
-                        const distA = haversineDistance(startLat, startLon, a.lat, a.lon);
-                        const distB = haversineDistance(startLat, startLon, b.lat, b.lon);
-                        return distA - distB;
-                    });
+                    // Build ordered waypoint list: preserve original via points order, insert avoidance waypoints
+                    // based on their position along the route
+                    const routeCoordinates = route.routes[0].geometry.coordinates;
+                    
+                    // Start with original via points in their original order
+                    const allViaPoints = [...viaPoints];
+                    
+                    // For each avoidance waypoint, find where it should be inserted
+                    // based on its position relative to the route and existing via points
+                    for (const avoidancePoint of avoidanceWaypoints) {
+                        // Find the closest point on the route to this avoidance waypoint
+                        let closestRouteIndex = 0;
+                        let minDist = Infinity;
+                        for (let i = 0; i < routeCoordinates.length; i++) {
+                            const [lon, lat] = routeCoordinates[i];
+                            const dist = haversineDistance(lat, lon, avoidancePoint.lat, avoidancePoint.lon);
+                            if (dist < minDist) {
+                                minDist = dist;
+                                closestRouteIndex = i;
+                            }
+                        }
+                        
+                        // Find which original via point this avoidance point is closest to
+                        // Insert it after that via point
+                        let insertIndex = allViaPoints.length;
+                        for (let i = 0; i < viaPoints.length; i++) {
+                            const viaPoint = viaPoints[i];
+                            // Find via point's position on route
+                            let viaRouteIndex = 0;
+                            let viaMinDist = Infinity;
+                            for (let j = 0; j < routeCoordinates.length; j++) {
+                                const [lon, lat] = routeCoordinates[j];
+                                const dist = haversineDistance(lat, lon, viaPoint.lat, viaPoint.lon);
+                                if (dist < viaMinDist) {
+                                    viaMinDist = dist;
+                                    viaRouteIndex = j;
+                                }
+                            }
+                            
+                            // If avoidance point is after this via point on the route, insert after it
+                            if (closestRouteIndex > viaRouteIndex) {
+                                insertIndex = i + 1;
+                            }
+                        }
+                        
+                        // Insert the avoidance waypoint at the calculated position
+                        allViaPoints.splice(insertIndex, 0, avoidancePoint);
+                    }
                     
                     // Try with OpenRouteService first if available
                     let newRoute = null;
@@ -2334,6 +2380,12 @@
 
         // Main route calculation function
         async function calculateRoute() {
+            // If already calculating, cancel the previous calculation
+            if (isCalculating) {
+                console.log('Cancelling previous calculation and starting new one...');
+                calculationId++; // Increment to invalidate previous calculation
+            }
+            
             const startAddress = document.getElementById('startAddress').value.trim();
             const destAddress = document.getElementById('destinationAddress').value.trim();
             const departureTime = document.getElementById('departureTime').value;
@@ -2358,6 +2410,10 @@
             const loadingText = document.getElementById('loadingText');
             const calculateBtn = document.getElementById('calculateBtn');
 
+            // Store current calculation ID to check if this calculation is still valid
+            const currentCalculationId = ++calculationId;
+            isCalculating = true;
+
             try {
                 loadingDiv.style.display = 'block';
                 calculateBtn.disabled = true;
@@ -2366,10 +2422,23 @@
                 // Geocode addresses
                 loadingText.textContent = 'Geocoding start address...';
                 const startCoords = await geocodeAddress(startAddress);
+                
+                // Check if calculation was cancelled
+                if (currentCalculationId !== calculationId) {
+                    console.log('Calculation cancelled during geocoding');
+                    return;
+                }
+                
                 await delay(1000);
 
                 loadingText.textContent = 'Geocoding destination address...';
                 const destCoords = await geocodeAddress(destAddress);
+                
+                // Check if calculation was cancelled
+                if (currentCalculationId !== calculationId) {
+                    console.log('Calculation cancelled during geocoding');
+                    return;
+                }
 
                 // Get route (with via points if any)
                 // For hikers and cyclists, try to find safer routes that avoid unsafe roads
@@ -2389,6 +2458,12 @@
                         destCoords.lat, destCoords.lon,
                         viaPoints
                     );
+                }
+                
+                // Check if calculation was cancelled after route calculation
+                if (currentCalculationId !== calculationId) {
+                    console.log('Calculation cancelled after route calculation');
+                    return;
                 }
 
                 // For hiking, search for hiking routes
@@ -2433,6 +2508,12 @@
                 }
 
                 // Calculate rest stops
+                // Check if calculation was cancelled
+                if (currentCalculationId !== calculationId) {
+                    console.log('Calculation cancelled before rest stops');
+                    return;
+                }
+                
                 loadingText.textContent = 'Calculating rest stops...';
                 const restStops = calculateRestStops(route, departureTime);
 
@@ -2443,6 +2524,12 @@
                 loadingText.textContent = 'Finding rest spots and checking restrictions...';
 
                 for (let i = 0; i < restStops.length; i++) {
+                    // Check if calculation was cancelled during loop
+                    if (currentCalculationId !== calculationId) {
+                        console.log(`Calculation cancelled during rest stop processing (${i + 1}/${restStops.length})`);
+                        return;
+                    }
+                    
                     const stop = restStops[i];
                     loadingText.textContent = `Processing rest stop ${i + 1} of ${restStops.length}...`;
 
@@ -2610,6 +2697,18 @@
                     }
                 }
 
+                // Final check before saving route data
+                if (currentCalculationId !== calculationId) {
+                    console.log('Calculation cancelled before saving route data');
+                    return;
+                }
+
+                // Final check before saving route data and updating UI
+                if (currentCalculationId !== calculationId) {
+                    console.log('Calculation cancelled before saving route data');
+                    return;
+                }
+
                 // Update UI
                 updateRouteSummary(route, startCoords.displayName, destCoords.displayName);
                 updateRestStopsList(restStops);
@@ -2620,11 +2719,25 @@
                 routeData = { route, restStops, startCoords, destCoords, viaPoints, safetyWarnings, vehicleType };
 
             } catch (error) {
-                alert(`Error: ${error.message}`);
-                console.error(error);
+                // Only show error if this is still the current calculation
+                if (currentCalculationId === calculationId) {
+                    alert(`Error: ${error.message}`);
+                    console.error(error);
+                } else {
+                    console.log('Error in cancelled calculation, ignoring:', error.message);
+                }
             } finally {
-                loadingDiv.style.display = 'none';
-                calculateBtn.disabled = false;
+                // Only update UI if this is still the current calculation
+                if (currentCalculationId === calculationId) {
+                    isCalculating = false;
+                    loadingDiv.style.display = 'none';
+                    calculateBtn.disabled = false;
+                } else {
+                    // If calculation was cancelled, still re-enable button but don't hide loading
+                    // (new calculation will handle UI)
+                    isCalculating = false;
+                    calculateBtn.disabled = false;
+                }
             }
         }
 
