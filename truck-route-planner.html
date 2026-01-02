@@ -640,6 +640,8 @@
         let endMarker = null;
         let viaMarkers = [];
         let viaPoints = []; // Array of {lat, lon, name}
+        let addedWaterPoints = []; // Track water points to ensure minimum distance
+        let addedHuts = []; // Track huts/shelters to ensure minimum distance
 
         // Country-specific rules (for trucks/cars)
         const COUNTRY_RULES = {
@@ -1686,6 +1688,60 @@
             }
             viaMarkers.forEach(marker => map.removeLayer(marker));
             viaMarkers = [];
+            addedWaterPoints = []; // Reset water points tracking
+            addedHuts = []; // Reset huts tracking
+        }
+
+        // Filter water points by minimum distance (4 km)
+        function filterWaterPointsByDistance(waterPoints, minDistanceKm = 4) {
+            const filtered = [];
+            
+            for (const water of waterPoints) {
+                let tooClose = false;
+                
+                // Check distance to all already added water points
+                for (const existing of addedWaterPoints) {
+                    const distance = haversineDistance(water.lat, water.lon, existing.lat, existing.lon);
+                    if (distance < minDistanceKm) {
+                        tooClose = true;
+                        break;
+                    }
+                }
+                
+                // If not too close, add it
+                if (!tooClose) {
+                    filtered.push(water);
+                    addedWaterPoints.push(water); // Track it
+                }
+            }
+            
+            return filtered;
+        }
+
+        // Filter huts/shelters by minimum distance (1300 meters)
+        function filterHutsByDistance(huts, minDistanceMeters = 1.3) {
+            const filtered = [];
+            
+            for (const hut of huts) {
+                let tooClose = false;
+                
+                // Check distance to all already added huts
+                for (const existing of addedHuts) {
+                    const distance = haversineDistance(hut.lat, hut.lon, existing.lat, existing.lon);
+                    if (distance < minDistanceMeters) {
+                        tooClose = true;
+                        break;
+                    }
+                }
+                
+                // If not too close, add it
+                if (!tooClose) {
+                    filtered.push(hut);
+                    addedHuts.push(hut); // Track it
+                }
+            }
+            
+            return filtered;
         }
 
         // Add marker to map
@@ -2049,9 +2105,11 @@
                     if (vehicleType === 'hiker' || vehicleType === 'bike') {
                         // Find water points for hiking and cycling
                         const waterPoints = await findDrinkingWater(stop.lat, stop.lon, 2000);
-                        waterPoints.forEach(water => {
+                        // Filter to ensure minimum 4km distance between water points
+                        const filteredWaterPoints = filterWaterPointsByDistance(waterPoints, 4);
+                        filteredWaterPoints.forEach(water => {
                             const popupContent = water.note 
-                                ? `<strong>${water.name}</strong><br>⚠️ ${water.note}<br>Coordinates: ${water.lat.toFixed(4)}, ${water.lon.toFixed(4)}`
+                                ? `<strong>${water.name}</strong><br>Warning: ${water.note}<br>Coordinates: ${water.lat.toFixed(4)}, ${water.lon.toFixed(4)}`
                                 : `<strong>${water.name}</strong><br>Coordinates: ${water.lat.toFixed(4)}, ${water.lon.toFixed(4)}`;
                             addMarker(water.lat, water.lon, 'water', popupContent);
                         });
@@ -2073,8 +2131,12 @@
                                 s.type !== 'basic_hut'
                             );
                             
-                            // Show up to 5 huts/shelters (prioritize huts)
-                            const spotsToShow = [...huts, ...otherShelters].slice(0, 5);
+                            // Combine and filter by minimum distance (1300m)
+                            const allSpots = [...huts, ...otherShelters];
+                            const filteredSpots = filterHutsByDistance(allSpots, 1.3);
+                            
+                            // Show up to 5 huts/shelters (prioritize huts, but respect distance)
+                            const spotsToShow = filteredSpots.slice(0, 5);
                             
                             spotsToShow.forEach(spot => {
                                 let typeLabel = spot.type;
@@ -2148,7 +2210,9 @@
                         
                         // Find water points
                         const waterPoints = await findDrinkingWater(lat, lon, 2000);
-                        waterPoints.forEach(water => {
+                        // Filter to ensure minimum 4km distance between water points
+                        const filteredWaterPoints = filterWaterPointsByDistance(waterPoints, 4);
+                        filteredWaterPoints.forEach(water => {
                             const popupContent = water.note 
                                 ? `<strong>${water.name}</strong><br>Warning: ${water.note}<br>Coordinates: ${water.lat.toFixed(4)}, ${water.lon.toFixed(4)}`
                                 : `<strong>${water.name}</strong><br>Coordinates: ${water.lat.toFixed(4)}, ${water.lon.toFixed(4)}`;
@@ -2162,7 +2226,9 @@
                             h.type === 'wilderness_hut' || 
                             h.type === 'basic_hut'
                         );
-                        priorityHuts.slice(0, 2).forEach(spot => {
+                        // Filter by minimum distance (1300m)
+                        const filteredHuts = filterHutsByDistance(priorityHuts, 1.3);
+                        filteredHuts.slice(0, 2).forEach(spot => {
                             let typeLabel = spot.type;
                             if (spot.type === 'alpine_hut') typeLabel = 'Alpine Hut';
                             else if (spot.type === 'wilderness_hut') typeLabel = 'Wilderness Hut';

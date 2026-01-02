@@ -30,6 +30,7 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
   - Alpine huts (`tourism=alpine_hut`)
   - Wilderness huts (`tourism=wilderness_hut`)
   - Unlocked basic huts (`shelter_type=basic_hut`, `locked=no`)
+- **Distance filtering**: Minimum 1300 m between huts/shelters to prevent map clutter
 - Road safety checks - avoids unsafe roads (motorways, trunk roads, primary roads)
 - Allowed roads: footway, path, track, steps, bridleway, and roads with `hiking=yes` or `foot=designated`
 
@@ -40,6 +41,7 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 - Drinking water points with refill locations
 - Natural spring locations with safety warnings
 - Hut search near daily stops and segment breaks
+- **Distance filtering**: Minimum 1300 m between huts/shelters to prevent map clutter
 - Road safety checks - avoids unsafe roads (motorways, trunk roads, primary roads)
 - Allowed roads: cycleway, path, track, secondary, tertiary, unclassified, residential, living_street
 
@@ -57,13 +59,16 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 - Natural spring detection with safety warnings
 - "Drink it at your own risk" notice for springs
 - Water points shown along entire route for hiking and cycling
+- **Distance filtering**: Minimum 4 km between water points to prevent map clutter
 
 ### Road Safety
 - Automatic route safety checking for hikers and cyclists
+- **Route optimization**: Automatically selects safest route from OSRM alternatives
+- Compares multiple route options and picks the one with fewest unsafe segments
 - Avoids unsafe road types: motorway, trunk, primary, primary_link, motorway_link, trunk_link
-- Safety warnings displayed on map and in sidebar
+- Safety warnings displayed on map and in sidebar for any remaining unsafe segments
 - Real-time validation of road types along route
-- Helps plan safer routes by identifying problematic segments
+- Helps plan safer routes by identifying and avoiding problematic segments
 
 ### Parking & Camping
 - Suitable parking spots for trucks/cars
@@ -114,6 +119,15 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 - Via points appear in a list with remove buttons
 - Routes will pass through all via points in order
 
+### GPX Export
+
+- Export calculated routes to GPX format for use in GPS devices and mapping software
+- Includes complete route track with all coordinates
+- Waypoints: start, destination, via points, rest stops, safety warnings
+- Metadata: route distance, duration, vehicle type, creation timestamp
+- File naming: `route_{vehicleType}_{date}.gpx`
+- Compatible with Garmin devices, navigation apps, and mapping software
+
 ## API Rate Limiting
 
 The application implements rate limiting for Nominatim requests:
@@ -135,8 +149,10 @@ The application implements rate limiting for Nominatim requests:
 - Daily segments: 40 km maximum suggested
 - Rest stops at 11.295 km or 2.275 km intervals
 - Water points and shelters along route
+- **Water point filtering**: Minimum 4 km between water points
+- **Hut filtering**: Minimum 1300 m between huts/shelters
 - Hut search: alpine huts, wilderness huts, unlocked basic huts
-- Road safety validation - warns about unsafe road types
+- Road safety validation - automatically selects safest route from alternatives
 - Allowed roads: footway, path, track, steps, bridleway, or roads with hiking/foot designations
 
 ### Cyclist Routes
@@ -145,8 +161,10 @@ The application implements rate limiting for Nominatim requests:
 - 4 segments per day, 17 km each
 - Segment break markers
 - Water points along route
+- **Water point filtering**: Minimum 4 km between water points
+- **Hut filtering**: Minimum 1300 m between huts/shelters
 - Hut search near daily stops and segment breaks
-- Road safety validation - warns about unsafe road types
+- Road safety validation - automatically selects safest route from alternatives
 - Allowed roads: cycleway, path, track, secondary, tertiary, unclassified, residential, living_street
 
 ## Marker Colors
