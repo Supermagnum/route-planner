@@ -540,6 +540,9 @@
             <div class="input-group">
                 <button class="btn" id="calculateBtn">Calculate Route</button>
             </div>
+            <div class="input-group">
+                <button class="btn" id="exportGpxBtn" style="background: #27ae60;" disabled>Export to GPX</button>
+            </div>
         </div>
 
         <div class="main-content">
@@ -672,6 +675,7 @@
         // Event listeners
         document.getElementById('vehicleType').addEventListener('change', handleVehicleTypeChange);
         document.getElementById('calculateBtn').addEventListener('click', calculateRoute);
+        document.getElementById('exportGpxBtn').addEventListener('click', exportToGPX);
         
         // Map click mode buttons
         document.querySelectorAll('.click-mode-btn').forEach(btn => {
@@ -703,6 +707,7 @@
             document.getElementById('routeSummary').innerHTML = '<p style="color: #999;">Enter addresses and click Calculate Route</p>';
             document.getElementById('restStopsList').innerHTML = '<p style="color: #999;">No route calculated yet</p>';
             document.getElementById('axleWarningsSection').style.display = 'none';
+            document.getElementById('exportGpxBtn').disabled = true;
         }
 
         // Update legend based on vehicle type
@@ -1005,7 +1010,7 @@
         }
 
         // Get route from OSRM (supports multiple waypoints)
-        async function getRoute(startLat, startLon, destLat, destLon, viaPoints = []) {
+        async function getRoute(startLat, startLon, destLat, destLon, viaPoints = [], alternatives = false) {
             try {
                 let profile;
                 if (vehicleType === 'hiker') {
@@ -1023,8 +1028,9 @@
                 });
                 waypoints += `;${destLon},${destLat}`;
                 
+                const alternativesParam = alternatives ? '&alternatives=true&number=3' : '';
                 const response = await fetch(
-                    `https://router.project-osrm.org/route/v1/${profile}/${waypoints}?overview=full&geometries=geojson`
+                    `https://router.project-osrm.org/route/v1/${profile}/${waypoints}?overview=full&geometries=geojson${alternativesParam}`
                 );
                 const data = await response.json();
                 if (data.code !== 'Ok') {
@@ -1033,6 +1039,63 @@
                 return data;
             } catch (error) {
                 throw new Error(`Routing failed: ${error.message}`);
+            }
+        }
+
+        // Find safer route by checking alternatives
+        async function findSaferRoute(startLat, startLon, destLat, destLon, viaPoints, vehicleType) {
+            try {
+                // First, get route with alternatives
+                const routeData = await getRoute(startLat, startLon, destLat, destLon, viaPoints, true);
+                
+                if (!routeData.routes || routeData.routes.length === 0) {
+                    // Fallback to regular route if alternatives not available
+                    return await getRoute(startLat, startLon, destLat, destLon, viaPoints, false);
+                }
+
+                // If only one route or not hiker/bike, return first route
+                if (routeData.routes.length === 1 || (vehicleType !== 'hiker' && vehicleType !== 'bike')) {
+                    return {
+                        routes: [routeData.routes[0]],
+                        code: routeData.code
+                    };
+                }
+
+                // Check each route for unsafe segments
+                const routeScores = [];
+                
+                for (let i = 0; i < routeData.routes.length; i++) {
+                    const route = {
+                        routes: [routeData.routes[i]],
+                        code: routeData.code
+                    };
+                    
+                    const warnings = await checkRouteSafety(route, vehicleType);
+                    const unsafeCount = warnings.length;
+                    const distance = route.routes[0].distance;
+                    
+                    routeScores.push({
+                        index: i,
+                        route: route,
+                        unsafeCount: unsafeCount,
+                        distance: distance,
+                        score: unsafeCount * 1000 + distance // Penalize unsafe routes heavily
+                    });
+                }
+
+                // Sort by score (lower is better - fewer unsafe segments, shorter distance)
+                routeScores.sort((a, b) => a.score - b.score);
+                
+                // Return the safest route (lowest score)
+                const bestRoute = routeScores[0];
+                
+                // If the best route still has unsafe segments, we'll warn about them
+                // but at least we've chosen the safest available option
+                return bestRoute.route;
+            } catch (error) {
+                // If alternatives fail, fall back to regular route
+                console.warn('Failed to get route alternatives, using standard route:', error);
+                return await getRoute(startLat, startLon, destLat, destLon, viaPoints, false);
             }
         }
 
@@ -1181,7 +1244,7 @@
             return true; // Trucks and cars can use all roads
         }
 
-        // Check route for unsafe road segments
+        // Check route for unsafe road segments (faster version for route comparison)
         async function checkRouteSafety(route, vehicleType) {
             if (vehicleType !== 'hiker' && vehicleType !== 'bike') {
                 return []; // Only check for hikers and cyclists
@@ -1190,13 +1253,14 @@
             const warnings = [];
             const coordinates = route.routes[0].geometry.coordinates;
             
-            // Sample points along the route (every 20th point or at least 10 points)
-            const sampleInterval = Math.max(1, Math.floor(coordinates.length / 20));
+            // Sample points along the route more efficiently for route comparison
+            // Use fewer samples for faster comparison, more for final detailed check
+            const sampleInterval = Math.max(1, Math.floor(coordinates.length / 15));
             const checkedPoints = new Set();
 
             for (let i = 0; i < coordinates.length; i += sampleInterval) {
                 const [lon, lat] = coordinates[i];
-                const pointKey = `${lat.toFixed(4)},${lon.toFixed(4)}`;
+                const pointKey = `${lat.toFixed(3)},${lon.toFixed(3)}`;
                 
                 // Avoid checking the same point twice
                 if (checkedPoints.has(pointKey)) continue;
@@ -1208,8 +1272,8 @@
                     if (!isRoadSafe(roadType, vehicleType)) {
                         // Check if we already have a warning for this location
                         const existingWarning = warnings.find(w => 
-                            Math.abs(w.lat - lat) < 0.001 && 
-                            Math.abs(w.lon - lon) < 0.001 &&
+                            Math.abs(w.lat - lat) < 0.002 && 
+                            Math.abs(w.lon - lon) < 0.002 &&
                             w.roadType === roadType.highway
                         );
                         
@@ -1225,7 +1289,7 @@
                     }
                 }
 
-                await delay(200); // Rate limiting
+                await delay(150); // Rate limiting (faster for comparison)
             }
 
             return warnings;
@@ -1886,12 +1950,24 @@
                 const destCoords = await geocodeAddress(destAddress);
 
                 // Get route (with via points if any)
+                // For hikers and cyclists, try to find safer routes that avoid unsafe roads
                 loadingText.textContent = 'Calculating route...';
-                const route = await getRoute(
-                    startCoords.lat, startCoords.lon,
-                    destCoords.lat, destCoords.lon,
-                    viaPoints
-                );
+                let route;
+                if (vehicleType === 'hiker' || vehicleType === 'bike') {
+                    loadingText.textContent = 'Finding safest route (avoiding unsafe roads)...';
+                    route = await findSaferRoute(
+                        startCoords.lat, startCoords.lon,
+                        destCoords.lat, destCoords.lon,
+                        viaPoints,
+                        vehicleType
+                    );
+                } else {
+                    route = await getRoute(
+                        startCoords.lat, startCoords.lon,
+                        destCoords.lat, destCoords.lon,
+                        viaPoints
+                    );
+                }
 
                 // For hiking, search for hiking routes
                 if (vehicleType === 'hiker') {
@@ -2109,7 +2185,7 @@
                 updateSafetyWarnings(safetyWarnings);
                 updateCountryWarnings(countries);
 
-                routeData = { route, restStops, startCoords, destCoords };
+                routeData = { route, restStops, startCoords, destCoords, viaPoints, safetyWarnings, vehicleType };
 
             } catch (error) {
                 alert(`Error: ${error.message}`);
@@ -2118,6 +2194,160 @@
                 loadingDiv.style.display = 'none';
                 calculateBtn.disabled = false;
             }
+        }
+
+        // Export route to GPX file
+        function exportToGPX() {
+            if (!routeData) {
+                alert('No route calculated yet. Please calculate a route first.');
+                return;
+            }
+
+            const route = routeData.route;
+            const restStops = routeData.restStops || [];
+            const startCoords = routeData.startCoords;
+            const destCoords = routeData.destCoords;
+            const viaPoints = routeData.viaPoints || [];
+            const safetyWarnings = routeData.safetyWarnings || [];
+            const vehicleType = routeData.vehicleType || 'unknown';
+
+            // Get all waypoints data
+            const allWaypoints = [];
+            
+            // Start point
+            allWaypoints.push({
+                lat: startCoords.lat,
+                lon: startCoords.lon,
+                name: 'Start: ' + startCoords.displayName,
+                type: 'start'
+            });
+
+            // Via points
+            viaPoints.forEach((via, index) => {
+                allWaypoints.push({
+                    lat: via.lat,
+                    lon: via.lon,
+                    name: `Via Point ${index + 1}: ${via.name}`,
+                    type: 'via'
+                });
+            });
+
+            // End point
+            allWaypoints.push({
+                lat: destCoords.lat,
+                lon: destCoords.lon,
+                name: 'Destination: ' + destCoords.displayName,
+                type: 'destination'
+            });
+
+            // Rest stops
+            restStops.forEach((stop, index) => {
+                let stopName = '';
+                if (vehicleType === 'hiker') {
+                    if (stop.type === 'daily-segment') {
+                        stopName = `Day ${stop.day} End (40 km)`;
+                    } else if (stop.type === 'hiker-rest') {
+                        stopName = `Rest ${index + 1} (11.295 km)`;
+                    } else if (stop.type === 'hiker-rest-alt') {
+                        stopName = `Alt Rest ${index + 1} (2.275 km)`;
+                    }
+                } else if (vehicleType === 'bike') {
+                    if (stop.type === 'daily-segment') {
+                        stopName = `Day ${stop.day} End (70 km)`;
+                    } else if (stop.type === 'segment-break') {
+                        stopName = `Segment ${stop.segment} Break (17 km)`;
+                    }
+                } else {
+                    if (stop.type === 'break') {
+                        stopName = `Break ${index + 1} (45 min)`;
+                    } else if (stop.type === 'daily') {
+                        stopName = `Daily Rest ${index + 1} (11h)`;
+                    } else if (stop.type === 'weekly') {
+                        stopName = `Weekly Rest (45h)`;
+                    }
+                }
+                
+                if (stopName) {
+                    allWaypoints.push({
+                        lat: stop.lat,
+                        lon: stop.lon,
+                        name: stopName,
+                        type: stop.type,
+                        distance: stop.distance
+                    });
+                }
+            });
+
+            // Generate GPX XML
+            const gpx = generateGPX(route, allWaypoints, safetyWarnings, vehicleType);
+            
+            // Create download
+            const blob = new Blob([gpx], { type: 'application/gpx+xml' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `route_${vehicleType}_${new Date().toISOString().split('T')[0]}.gpx`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        // Generate GPX XML content
+        function generateGPX(route, waypoints, safetyWarnings, vehicleType) {
+            const coordinates = route.routes[0].geometry.coordinates;
+            const distance = (route.routes[0].distance / 1000).toFixed(2);
+            const duration = route.routes[0].duration;
+            const hours = Math.floor(duration / 3600);
+            const minutes = Math.floor((duration % 3600) / 60);
+            
+            let gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Route Planner" xmlns="http://www.topografix.com/GPX/1/1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
+  <metadata>
+    <name>Route - ${vehicleType}</name>
+    <desc>Route planned for ${vehicleType}. Distance: ${distance} km, Duration: ${hours}h ${minutes}m</desc>
+    <time>${new Date().toISOString()}</time>
+  </metadata>
+`;
+
+            // Add waypoints
+            waypoints.forEach(wpt => {
+                gpx += `  <wpt lat="${wpt.lat.toFixed(6)}" lon="${wpt.lon.toFixed(6)}">
+    <name><![CDATA[${wpt.name}]]></name>
+    <type>${wpt.type}</type>
+    ${wpt.distance ? `<cmt>Distance: ${wpt.distance.toFixed(2)} km</cmt>` : ''}
+  </wpt>
+`;
+            });
+
+            // Add safety warnings as waypoints
+            safetyWarnings.forEach((warning, index) => {
+                gpx += `  <wpt lat="${warning.lat.toFixed(6)}" lon="${warning.lon.toFixed(6)}">
+    <name><![CDATA[Safety Warning ${index + 1}: ${warning.roadType}]]></name>
+    <type>safety_warning</type>
+    <cmt><![CDATA[${warning.message} - ${warning.roadName || 'Unnamed road'}]]></cmt>
+  </wpt>
+`;
+            });
+
+            // Add track (the actual route)
+            gpx += `  <trk>
+    <name>Route Track</name>
+    <desc>Main route track for ${vehicleType}</desc>
+    <trkseg>
+`;
+            
+            coordinates.forEach(coord => {
+                const [lon, lat] = coord;
+                gpx += `      <trkpt lat="${lat.toFixed(6)}" lon="${lon.toFixed(6)}"></trkpt>
+`;
+            });
+
+            gpx += `    </trkseg>
+  </trk>
+</gpx>`;
+
+            return gpx;
         }
     </script>
 </body>
