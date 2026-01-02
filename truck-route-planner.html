@@ -507,7 +507,7 @@
             <div class="input-group">
                 <label for="vehicleType">Vehicle Type</label>
                 <select id="vehicleType">
-                    <option value="truck">Truck</option>
+                    <option value="truck" selected>Truck</option>
                     <option value="car">Car</option>
                     <option value="hiker">Hiker</option>
                     <option value="bike">Cyclist</option>
@@ -691,6 +691,9 @@
         document.getElementById('vehicleType').addEventListener('change', handleVehicleTypeChange);
         document.getElementById('calculateBtn').addEventListener('click', calculateRoute);
         document.getElementById('exportGpxBtn').addEventListener('click', exportToGPX);
+        
+        // Initialize truck fields visibility on page load
+        handleVehicleTypeChange();
         document.getElementById('orsApiKey').addEventListener('input', function() {
             orsApiKey = this.value.trim();
             // Store in localStorage for convenience
@@ -1160,13 +1163,25 @@
                 if (orsApiKey && (vehicleType === 'hiker' || vehicleType === 'bike')) {
                     try {
                         const orsRoute = await getRouteOpenRouteService(startLat, startLon, destLat, destLon, viaPoints, vehicleType);
-                        // Still check for any remaining unsafe segments (in case some slip through)
+                        // Strictly check for unsafe segments - reject if any found
                         const warnings = await checkRouteSafety(orsRoute, vehicleType);
                         if (warnings.length === 0) {
                             return orsRoute; // Perfect route with no unsafe roads
                         }
-                        // If there are still warnings, fall through to alternative checking
-                        console.log('OpenRouteService route still has unsafe segments, checking alternatives...');
+                        // If there are unsafe segments, try to improve the route
+                        console.log(`OpenRouteService route has ${warnings.length} unsafe segments, attempting to avoid them...`);
+                        const improvedRoute = await tryAvoidUnsafeRoads(
+                            startLat, startLon, destLat, destLon, viaPoints, 
+                            orsRoute, vehicleType
+                        );
+                        if (improvedRoute && improvedRoute.routes) {
+                            const improvedWarnings = await checkRouteSafety(improvedRoute, vehicleType);
+                            if (improvedWarnings.length < warnings.length) {
+                                return improvedRoute;
+                            }
+                        }
+                        // If improvement didn't help, fall through to OSRM alternatives
+                        console.log('OpenRouteService route still has unsafe segments, trying OSRM alternatives...');
                     } catch (orsError) {
                         console.warn('OpenRouteService failed, falling back to OSRM:', orsError);
                         // Fall through to OSRM
@@ -1178,15 +1193,40 @@
                 
                 if (!routeData.routes || routeData.routes.length === 0) {
                     // Fallback to regular route if alternatives not available
-                    return await getRoute(startLat, startLon, destLat, destLon, viaPoints, false);
+                    const fallbackRoute = await getRoute(startLat, startLon, destLat, destLon, viaPoints, false);
+                    // Still check and try to improve
+                    const warnings = await checkRouteSafety(fallbackRoute, vehicleType);
+                    if (warnings.length > 0) {
+                        const improvedRoute = await tryAvoidUnsafeRoads(
+                            startLat, startLon, destLat, destLon, viaPoints, 
+                            fallbackRoute, vehicleType
+                        );
+                        if (improvedRoute && improvedRoute.routes) {
+                            return improvedRoute;
+                        }
+                    }
+                    return fallbackRoute;
                 }
 
-                // If only one route or not hiker/bike, return first route
+                // If only one route or not hiker/bike, check it and try to improve if needed
                 if (routeData.routes.length === 1 || (vehicleType !== 'hiker' && vehicleType !== 'bike')) {
-                    return {
+                    const singleRoute = {
                         routes: [routeData.routes[0]],
                         code: routeData.code
                     };
+                    if (vehicleType === 'hiker' || vehicleType === 'bike') {
+                        const warnings = await checkRouteSafety(singleRoute, vehicleType);
+                        if (warnings.length > 0) {
+                            const improvedRoute = await tryAvoidUnsafeRoads(
+                                startLat, startLon, destLat, destLon, viaPoints, 
+                                singleRoute, vehicleType
+                            );
+                            if (improvedRoute && improvedRoute.routes) {
+                                return improvedRoute;
+                            }
+                        }
+                    }
+                    return singleRoute;
                 }
 
                 // Check each route for unsafe segments
@@ -1207,7 +1247,8 @@
                         route: route,
                         unsafeCount: unsafeCount,
                         distance: distance,
-                        score: unsafeCount * 1000 + distance // Penalize unsafe routes heavily
+                        warnings: warnings,
+                        score: unsafeCount * 10000 + distance // Heavily penalize unsafe routes
                     });
                 }
 
@@ -1219,18 +1260,21 @@
                 
                 // If the best route has unsafe segments, try to add waypoints to avoid them
                 if (bestRoute.unsafeCount > 0) {
-                    console.log(`Route has ${bestRoute.unsafeCount} unsafe segments, attempting to avoid them...`);
+                    console.log(`Best OSRM route has ${bestRoute.unsafeCount} unsafe segments, attempting to avoid them...`);
                     // Try to find alternative route by adding intermediate waypoints
                     const improvedRoute = await tryAvoidUnsafeRoads(
                         startLat, startLon, destLat, destLon, viaPoints, 
                         bestRoute.route, vehicleType
                     );
                     if (improvedRoute && improvedRoute.routes) {
-                        return improvedRoute;
+                        const improvedWarnings = await checkRouteSafety(improvedRoute, vehicleType);
+                        if (improvedWarnings.length < bestRoute.unsafeCount) {
+                            return improvedRoute;
+                        }
                     }
                 }
                 
-                // If improvement failed or no unsafe segments, return best route
+                // Return best route (even if it has some unsafe segments - we'll warn about them)
                 return bestRoute.route;
             } catch (error) {
                 // If alternatives fail, fall back to regular route
@@ -1392,6 +1436,8 @@
                     return route; // No unsafe roads
                 }
 
+                console.log(`Attempting to avoid ${warnings.length} unsafe road segments...`);
+
                 // Get coordinates of unsafe segments
                 const coordinates = route.routes[0].geometry.coordinates;
                 const unsafeSegments = [];
@@ -1413,29 +1459,51 @@
                     unsafeSegments.push({
                         lat: warning.lat,
                         lon: warning.lon,
-                        index: closestIndex
+                        index: closestIndex,
+                        roadType: warning.roadType
                     });
                 }
 
                 // Try to find alternative routes by adding waypoints that avoid unsafe areas
-                // Search for safe roads near unsafe segments
+                // Search for safe roads near unsafe segments - try multiple attempts
                 const avoidanceWaypoints = [];
+                const processedLocations = new Set();
                 
                 for (const segment of unsafeSegments) {
-                    // Search in a 2km radius for safe roads
-                    const safeRoads = await findSafeRoadsNearby(segment.lat, segment.lon, 2000, vehicleType);
-                    if (safeRoads.length > 0) {
-                        // Use the first safe road point as a waypoint to avoid the unsafe segment
-                        avoidanceWaypoints.push({
-                            lat: safeRoads[0].lat,
-                            lon: safeRoads[0].lon,
-                            name: 'Avoidance waypoint'
-                        });
+                    const locationKey = `${segment.lat.toFixed(3)},${segment.lon.toFixed(3)}`;
+                    if (processedLocations.has(locationKey)) continue;
+                    processedLocations.add(locationKey);
+                    
+                    // Search in increasing radius: 1km, 2km, 3km
+                    for (const radius of [1000, 2000, 3000]) {
+                        const safeRoads = await findSafeRoadsNearby(segment.lat, segment.lon, radius, vehicleType);
+                        if (safeRoads.length > 0) {
+                            // Use the closest safe road point
+                            let closestSafeRoad = safeRoads[0];
+                            let minDist = haversineDistance(segment.lat, segment.lon, safeRoads[0].lat, safeRoads[0].lon);
+                            for (const road of safeRoads) {
+                                const dist = haversineDistance(segment.lat, segment.lon, road.lat, road.lon);
+                                if (dist < minDist) {
+                                    minDist = dist;
+                                    closestSafeRoad = road;
+                                }
+                            }
+                            
+                            avoidanceWaypoints.push({
+                                lat: closestSafeRoad.lat,
+                                lon: closestSafeRoad.lon,
+                                name: `Avoid ${segment.roadType}`
+                            });
+                            break; // Found a safe road, move to next segment
+                        }
+                        await delay(200); // Rate limiting
                     }
                 }
 
                 // If we found avoidance waypoints, try recalculating the route
                 if (avoidanceWaypoints.length > 0) {
+                    console.log(`Adding ${avoidanceWaypoints.length} waypoints to avoid unsafe roads...`);
+                    
                     // Combine original via points with avoidance waypoints
                     const allViaPoints = [...viaPoints, ...avoidanceWaypoints];
                     // Sort by distance along route to maintain order
@@ -1445,13 +1513,31 @@
                         return distA - distB;
                     });
                     
-                    const newRoute = await getRoute(startLat, startLon, destLat, destLon, allViaPoints, false);
+                    // Try with OpenRouteService first if available
+                    let newRoute = null;
+                    if (orsApiKey && (vehicleType === 'hiker' || vehicleType === 'bike')) {
+                        try {
+                            newRoute = await getRouteOpenRouteService(startLat, startLon, destLat, destLon, allViaPoints, vehicleType);
+                        } catch (e) {
+                            console.warn('OpenRouteService failed with waypoints, trying OSRM:', e);
+                        }
+                    }
+                    
+                    if (!newRoute) {
+                        newRoute = await getRoute(startLat, startLon, destLat, destLon, allViaPoints, false);
+                    }
+                    
                     const newWarnings = await checkRouteSafety(newRoute, vehicleType);
                     
                     // If new route has fewer unsafe segments, use it
                     if (newWarnings.length < warnings.length) {
+                        console.log(`Improved route: reduced unsafe segments from ${warnings.length} to ${newWarnings.length}`);
                         return newRoute;
+                    } else {
+                        console.log(`Route improvement didn't help: still ${newWarnings.length} unsafe segments`);
                     }
+                } else {
+                    console.log('No safe roads found near unsafe segments');
                 }
                 
                 return null; // Couldn't improve
@@ -2179,24 +2265,44 @@
             const section = document.getElementById('safetyWarningsSection');
 
             if (warnings.length === 0) {
-                warningsDiv.innerHTML = '<p style="color: #999;">No safety warnings - route appears safe</p>';
+                warningsDiv.innerHTML = '<p style="color: #28a745;">✓ No unsafe roads detected. Route is safe!</p>';
                 section.style.display = (vehicleType === 'hiker' || vehicleType === 'bike') ? 'block' : 'none';
                 return;
             }
 
-            warningsDiv.innerHTML = warnings.map(warning => `
-                <div class="axle-warning-item">
-                    <div class="axle-warning-title">Safety Warning</div>
-                    <div class="axle-warning-text">
-                        ${warning.message}<br>
-                        Road: ${warning.roadName || warning.roadType}<br>
-                        Type: ${warning.roadType}<br>
-                        Location: ${warning.lat.toFixed(4)}, ${warning.lon.toFixed(4)}
-                    </div>
+            const unsafeRoadTypes = [...new Set(warnings.map(w => w.roadType))];
+            
+            warningsDiv.innerHTML = `
+                <div style="background: #fff3cd; border: 2px solid #ffc107; border-radius: 4px; padding: 10px; margin-bottom: 10px;">
+                    <strong style="color: #856404;">⚠️ Route contains ${warnings.length} unsafe road segment${warnings.length > 1 ? 's' : ''}</strong>
+                    <p style="margin: 5px 0; color: #856404; font-size: 0.9em;">
+                        The route includes forbidden road types: <strong>${unsafeRoadTypes.join(', ')}</strong>. 
+                        These roads are unsafe for ${vehicleType === 'hiker' ? 'hikers' : 'cyclists'}.
+                    </p>
+                    <p style="margin: 5px 0; color: #856404; font-size: 0.85em;">
+                        <strong>Recommendation:</strong> Add via points around these areas to force the route to use safer roads, 
+                        or manually adjust your route to avoid these segments.
+                    </p>
                 </div>
-            `).join('');
+                ${warnings.map((warning, index) => `
+                    <div class="axle-warning-item" style="margin-bottom: 10px;">
+                        <div class="axle-warning-title">Warning ${index + 1}: ${warning.roadType}</div>
+                        <div class="axle-warning-text">
+                            <strong>Road:</strong> ${warning.roadName || 'Unnamed road'}<br>
+                            <strong>Location:</strong> ${warning.lat.toFixed(4)}, ${warning.lon.toFixed(4)}<br>
+                            <button onclick="map.setView([${warning.lat}, ${warning.lon}], 14)" 
+                                    style="margin-top: 5px; padding: 4px 8px; background: #007bff; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.85em;">
+                                View on Map
+                            </button>
+                        </div>
+                    </div>
+                `).join('')}
+            `;
 
             section.style.display = 'block';
+            
+            // Log warning for debugging
+            console.warn(`Route contains ${warnings.length} unsafe road segments: ${unsafeRoadTypes.join(', ')}`);
         }
 
         // Update country warnings
