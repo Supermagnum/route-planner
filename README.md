@@ -26,6 +26,12 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 - Drinking water points with refill locations
 - Natural spring locations with safety warnings
 - Shelter, hut, and camping area locations
+- Hut search near daily stops:
+  - Alpine huts (`tourism=alpine_hut`)
+  - Wilderness huts (`tourism=wilderness_hut`)
+  - Unlocked basic huts (`shelter_type=basic_hut`, `locked=no`)
+- Road safety checks - avoids unsafe roads (motorways, trunk roads, primary roads)
+- Allowed roads: footway, path, track, steps, bridleway, and roads with `hiking=yes` or `foot=designated`
 
 ### Cyclist Support
 - Daily segments: 70 km suggested maximum per day
@@ -33,6 +39,9 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 - Segment break markers
 - Drinking water points with refill locations
 - Natural spring locations with safety warnings
+- Hut search near daily stops and segment breaks
+- Road safety checks - avoids unsafe roads (motorways, trunk roads, primary roads)
+- Allowed roads: cycleway, path, track, secondary, tertiary, unclassified, residential, living_street
 
 ### Map Interaction
 - Click on map to set start location
@@ -47,6 +56,14 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 - Supports `drinking_water=yes`
 - Natural spring detection with safety warnings
 - "Drink it at your own risk" notice for springs
+- Water points shown along entire route for hiking and cycling
+
+### Road Safety
+- Automatic route safety checking for hikers and cyclists
+- Avoids unsafe road types: motorway, trunk, primary, primary_link, motorway_link, trunk_link
+- Safety warnings displayed on map and in sidebar
+- Real-time validation of road types along route
+- Helps plan safer routes by identifying problematic segments
 
 ### Parking & Camping
 - Suitable parking spots for trucks/cars
@@ -118,6 +135,9 @@ The application implements rate limiting for Nominatim requests:
 - Daily segments: 40 km maximum suggested
 - Rest stops at 11.295 km or 2.275 km intervals
 - Water points and shelters along route
+- Hut search: alpine huts, wilderness huts, unlocked basic huts
+- Road safety validation - warns about unsafe road types
+- Allowed roads: footway, path, track, steps, bridleway, or roads with hiking/foot designations
 
 ### Cyclist Routes
 - Uses OSRM `cycling` profile
@@ -125,6 +145,9 @@ The application implements rate limiting for Nominatim requests:
 - 4 segments per day, 17 km each
 - Segment break markers
 - Water points along route
+- Hut search near daily stops and segment breaks
+- Road safety validation - warns about unsafe road types
+- Allowed roads: cycleway, path, track, secondary, tertiary, unclassified, residential, living_street
 
 ## Marker Colors
 
@@ -133,19 +156,22 @@ The application implements rate limiting for Nominatim requests:
 - **Orange**: 45-minute breaks
 - **Red**: Daily rest (11 hours)
 - **Purple**: Weekly rest (45 hours)
-- **Yellow**: Axle load warnings
+- **Yellow**: Axle load warnings (trucks only)
 
 ### Hikers
 - **Blue**: Rest at 11.295 km intervals
 - **Light Blue**: Alternative rest at 2.275 km intervals
 - **Blue**: Drinking water points
-- **Green**: Shelters, huts, camping areas
+- **Green**: Shelters, huts, camping areas (alpine huts, wilderness huts, basic huts)
 - **Teal**: Daily segment end (40 km)
+- **Yellow**: Safety warnings (unsafe roads)
 
 ### Cyclists
 - **Teal**: Daily segment end (70 km)
 - **Orange**: Segment break (17 km)
 - **Blue**: Drinking water points
+- **Green**: Huts and shelters near stops
+- **Yellow**: Safety warnings (unsafe roads)
 
 ## File Structure
 
