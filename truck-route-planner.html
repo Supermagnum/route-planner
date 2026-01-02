@@ -1,0 +1,1888 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Route Planner - Trucks, Cars & Hikers</title>
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        .header {
+            background: #2c3e50;
+            color: white;
+            padding: 1rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            font-size: 1.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .header p {
+            font-size: 0.9rem;
+            opacity: 0.9;
+        }
+
+        .input-section {
+            background: white;
+            padding: 1rem;
+            border-bottom: 1px solid #ddd;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            align-items: flex-end;
+        }
+
+        .input-group {
+            flex: 1;
+            min-width: 200px;
+        }
+
+        .input-group label {
+            display: block;
+            margin-bottom: 0.25rem;
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: #555;
+        }
+
+        .input-group input,
+        .input-group select {
+            width: 100%;
+            padding: 0.5rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 1rem;
+        }
+
+        .input-group input:focus,
+        .input-group select:focus {
+            outline: none;
+            border-color: #3498db;
+        }
+
+        .truck-fields {
+            display: none;
+        }
+
+        .truck-fields.visible {
+            display: block;
+        }
+
+        .map-click-controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: white;
+            padding: 1rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            z-index: 1000;
+            min-width: 200px;
+        }
+
+        .map-click-controls h3 {
+            font-size: 0.9rem;
+            margin-bottom: 0.75rem;
+            color: #2c3e50;
+        }
+
+        .click-mode-buttons {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .click-mode-btn {
+            padding: 0.5rem;
+            border: 2px solid #ddd;
+            background: white;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+        }
+
+        .click-mode-btn:hover {
+            background: #f5f5f5;
+        }
+
+        .click-mode-btn.active {
+            border-color: #3498db;
+            background: #e3f2fd;
+            font-weight: 600;
+        }
+
+        .click-mode-btn.start.active {
+            border-color: #2ecc71;
+            background: #d4edda;
+        }
+
+        .click-mode-btn.end.active {
+            border-color: #e74c3c;
+            background: #f8d7da;
+        }
+
+        .click-mode-btn.via.active {
+            border-color: #9b59b6;
+            background: #e7d5f0;
+        }
+
+        .via-points-list {
+            margin-top: 1rem;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .via-point-item {
+            padding: 0.5rem;
+            margin-bottom: 0.25rem;
+            background: #f8f9fa;
+            border-left: 3px solid #9b59b6;
+            border-radius: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.85rem;
+        }
+
+        .via-point-name {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .via-point-remove {
+            background: #e74c3c;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            padding: 0.25rem 0.5rem;
+            cursor: pointer;
+            font-size: 0.75rem;
+        }
+
+        .via-point-remove:hover {
+            background: #c0392b;
+        }
+
+        .btn {
+            padding: 0.5rem 1.5rem;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .btn:hover {
+            background: #2980b9;
+        }
+
+        .btn:disabled {
+            background: #95a5a6;
+            cursor: not-allowed;
+        }
+
+        .main-content {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .map-container {
+            flex: 1;
+            position: relative;
+        }
+
+        #map {
+            width: 100%;
+            height: 100%;
+        }
+
+        .sidebar {
+            width: 350px;
+            background: white;
+            border-left: 1px solid #ddd;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sidebar-section {
+            padding: 1rem;
+            border-bottom: 1px solid #eee;
+        }
+
+        .sidebar-section h2 {
+            font-size: 1.1rem;
+            margin-bottom: 0.75rem;
+            color: #2c3e50;
+        }
+
+        .route-summary {
+            background: #ecf0f1;
+            padding: 0.75rem;
+            border-radius: 4px;
+            margin-bottom: 0.5rem;
+        }
+
+        .route-summary-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 0.25rem;
+        }
+
+        .route-summary-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .rest-stop-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .rest-stop-item {
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+            border-left: 4px solid;
+            background: #f8f9fa;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        .rest-stop-item:hover {
+            transform: translateX(4px);
+        }
+
+        .rest-stop-item.break {
+            border-color: #f39c12;
+        }
+
+        .rest-stop-item.daily {
+            border-color: #e74c3c;
+        }
+
+        .rest-stop-item.weekly {
+            border-color: #9b59b6;
+        }
+
+        .rest-stop-item.parking {
+            border-color: #27ae60;
+        }
+
+        .rest-stop-item.hiker-rest {
+            border-color: #3498db;
+        }
+
+        .rest-stop-item.hiker-rest-alt {
+            border-color: #5dade2;
+        }
+
+        .rest-stop-item.axle-warning {
+            border-color: #f1c40f;
+            background: #fef9e7;
+        }
+
+        .rest-stop-title {
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+
+        .rest-stop-details {
+            font-size: 0.85rem;
+            color: #666;
+        }
+
+        .axle-warning-item {
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+            background: #fef9e7;
+            border-left: 4px solid #f1c40f;
+            border-radius: 4px;
+        }
+
+        .axle-warning-title {
+            font-weight: 600;
+            color: #856404;
+            margin-bottom: 0.25rem;
+        }
+
+        .axle-warning-text {
+            font-size: 0.85rem;
+            color: #856404;
+        }
+
+        .country-warning {
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+            border-radius: 4px;
+            border-left: 4px solid;
+        }
+
+        .country-warning.norway {
+            background: #e8f5e9;
+            border-color: #4caf50;
+        }
+
+        .country-warning.sweden {
+            background: #fff3e0;
+            border-color: #ff9800;
+        }
+
+        .country-warning.denmark {
+            background: #ffebee;
+            border-color: #f44336;
+        }
+
+        .country-warning.finland {
+            background: #e3f2fd;
+            border-color: #2196f3;
+        }
+
+        .country-warning-title {
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+
+        .country-warning-text {
+            font-size: 0.85rem;
+        }
+
+        .legend {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 2px solid white;
+            box-shadow: 0 0 0 1px rgba(0,0,0,0.2);
+        }
+
+        .legend-color.break {
+            background: #f39c12;
+        }
+
+        .legend-color.daily {
+            background: #e74c3c;
+        }
+
+        .legend-color.weekly {
+            background: #9b59b6;
+        }
+
+        .legend-color.parking {
+            background: #27ae60;
+        }
+
+        .legend-color.hiker-rest {
+            background: #3498db;
+        }
+
+        .legend-color.hiker-rest-alt {
+            background: #5dade2;
+        }
+
+        .legend-color.axle-warning {
+            background: #f1c40f;
+        }
+
+        .legend-color.water {
+            background: #3498db;
+        }
+
+        .rest-stop-item.water {
+            border-color: #3498db;
+        }
+
+        .rest-stop-item.daily-segment {
+            border-color: #16a085;
+        }
+
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            z-index: 1000;
+            text-align: center;
+        }
+
+        .loading-spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error {
+            background: #fee;
+            color: #c33;
+            padding: 1rem;
+            margin: 1rem;
+            border-radius: 4px;
+            border-left: 4px solid #c33;
+        }
+
+        .disclaimer {
+            padding: 1rem;
+            background: #fff3cd;
+            border-top: 1px solid #ddd;
+            font-size: 0.85rem;
+            color: #856404;
+        }
+
+        .disclaimer strong {
+            display: block;
+            margin-bottom: 0.5rem;
+        }
+
+        @media (max-width: 768px) {
+            .main-content {
+                flex-direction: column;
+            }
+
+            .sidebar {
+                width: 100%;
+                max-height: 40vh;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🗺️ Route Planner</h1>
+            <p>Mandatory Rest Stops for Trucks, Cars & Hikers</p>
+        </div>
+
+        <div class="input-section">
+            <div class="input-group">
+                <label for="vehicleType">Vehicle Type</label>
+                <select id="vehicleType">
+                    <option value="truck">Truck</option>
+                    <option value="car">Car</option>
+                    <option value="hiker">Hiker</option>
+                    <option value="bike">Cyclist</option>
+                </select>
+            </div>
+            <div class="input-group">
+                <label for="startAddress">Start Address</label>
+                <input type="text" id="startAddress" placeholder="e.g., Oslo, Norway">
+            </div>
+            <div class="input-group">
+                <label for="destinationAddress">Destination Address</label>
+                <input type="text" id="destinationAddress" placeholder="e.g., Stockholm, Sweden">
+            </div>
+            <div class="input-group">
+                <label for="departureTime">Departure Time</label>
+                <input type="datetime-local" id="departureTime">
+            </div>
+            <div class="input-group truck-fields" id="truckFields">
+                <label for="totalWeight">Total Weight (tonnes)</label>
+                <input type="number" id="totalWeight" step="0.1" min="0" placeholder="e.g., 40">
+            </div>
+            <div class="input-group truck-fields" id="truckFields2">
+                <label for="axleLoad">Axle Load (tonnes per axle)</label>
+                <input type="number" id="axleLoad" step="0.1" min="0" placeholder="e.g., 10">
+            </div>
+            <div class="input-group truck-fields" id="truckFields3">
+                <label for="numAxles">Number of Axles</label>
+                <input type="number" id="numAxles" min="2" value="2" placeholder="e.g., 2">
+            </div>
+            <div class="input-group">
+                <button class="btn" id="calculateBtn">Calculate Route</button>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="map-container">
+                <div id="map"></div>
+                <div class="map-click-controls">
+                    <h3>Click on Map to Set:</h3>
+                    <div class="click-mode-buttons">
+                        <button class="click-mode-btn start" id="clickModeStart" data-mode="start">📍 Start Location</button>
+                        <button class="click-mode-btn end" id="clickModeEnd" data-mode="end">🎯 End Location</button>
+                        <button class="click-mode-btn via" id="clickModeVia" data-mode="via">➕ Via Point</button>
+                        <button class="click-mode-btn" id="clickModeOff" data-mode="off">❌ Disable</button>
+                    </div>
+                    <div class="via-points-list" id="viaPointsList" style="display: none;">
+                        <div style="font-size: 0.85rem; font-weight: 600; margin-bottom: 0.5rem; color: #555;">Via Points:</div>
+                        <div id="viaPointsContainer"></div>
+                    </div>
+                </div>
+                <div class="loading" id="loading" style="display: none;">
+                    <div class="loading-spinner"></div>
+                    <div id="loadingText">Calculating route...</div>
+                </div>
+            </div>
+
+            <div class="sidebar">
+                <div class="sidebar-section">
+                    <h2>Route Summary</h2>
+                    <div id="routeSummary">
+                        <p style="color: #999;">Enter addresses and click Calculate Route</p>
+                    </div>
+                </div>
+
+                <div class="sidebar-section" id="axleWarningsSection" style="display: none;">
+                    <h2>Axle Load Warnings</h2>
+                    <div id="axleWarnings">
+                        <p style="color: #999;">No warnings</p>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h2>Rest Stops</h2>
+                    <div id="restStopsList">
+                        <p style="color: #999;">No route calculated yet</p>
+                    </div>
+                </div>
+
+                <div class="sidebar-section" id="countryWarningsSection">
+                    <h2>Country Warnings</h2>
+                    <div id="countryWarnings">
+                        <p style="color: #999;">Will appear after route calculation</p>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h2>Legend</h2>
+                    <div class="legend" id="legend">
+                        <!-- Legend items will be populated dynamically -->
+                    </div>
+                </div>
+
+                <div class="disclaimer">
+                    <strong>⚠️ Disclaimer</strong>
+                    <p>This tool is for planning purposes only. Always verify local regulations, road restrictions, and obtain necessary permissions. Rules vary by country and region. Parking spot suggestions are based on OpenStreetMap data and may not be accurate or legal. Always respect private property and local laws. Axle load restrictions are based on OSM data and should be verified with local authorities.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script>
+        // Initialize map
+        const map = L.map('map').setView([60, 10], 4);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        // State
+        let routeData = null;
+        let markers = [];
+        let routePolyline = null;
+        let countryRules = {};
+        let vehicleType = 'truck';
+        let truckSpecs = { totalWeight: 0, axleLoad: 0, numAxles: 2 };
+        let clickMode = 'off'; // 'start', 'end', 'via', 'off'
+        let startMarker = null;
+        let endMarker = null;
+        let viaMarkers = [];
+        let viaPoints = []; // Array of {lat, lon, name}
+
+        // Country-specific rules (for trucks/cars)
+        const COUNTRY_RULES = {
+            'Norway': {
+                class: 'norway',
+                rules: '2 nights max, 150m from houses. Right to roam (Allemannsretten) applies.'
+            },
+            'Sweden': {
+                class: 'sweden',
+                rules: '1-2 nights, out of sight from houses. Right to roam (Allemansrätten) applies.'
+            },
+            'Denmark': {
+                class: 'denmark',
+                rules: 'WARNING: Designated sites only or permission required. Wild camping generally not allowed.'
+            },
+            'Finland': {
+                class: 'finland',
+                rules: 'Short periods allowed, keep distance from homes. Everyman\'s right (Jokamiehenoikeus) applies.'
+            }
+        };
+
+        // Vehicle type colors for route
+        const VEHICLE_COLORS = {
+            truck: '#e74c3c',
+            car: '#3498db',
+            hiker: '#27ae60',
+            bike: '#e67e22'
+        };
+
+        // Set default departure time to now
+        document.getElementById('departureTime').value = new Date().toISOString().slice(0, 16);
+
+        // Event listeners
+        document.getElementById('vehicleType').addEventListener('change', handleVehicleTypeChange);
+        document.getElementById('calculateBtn').addEventListener('click', calculateRoute);
+        
+        // Map click mode buttons
+        document.querySelectorAll('.click-mode-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                clickMode = this.dataset.mode;
+                updateClickModeButtons();
+            });
+        });
+        
+        // Map click handler
+        map.on('click', handleMapClick);
+
+        // Handle vehicle type change
+        function handleVehicleTypeChange() {
+            vehicleType = document.getElementById('vehicleType').value;
+            const truckFields = document.querySelectorAll('.truck-fields');
+            
+            if (vehicleType === 'truck') {
+                truckFields.forEach(field => field.classList.add('visible'));
+            } else {
+                truckFields.forEach(field => field.classList.remove('visible'));
+            }
+
+            // Update legend
+            updateLegend();
+            
+            // Clear current route
+            clearMap();
+            document.getElementById('routeSummary').innerHTML = '<p style="color: #999;">Enter addresses and click Calculate Route</p>';
+            document.getElementById('restStopsList').innerHTML = '<p style="color: #999;">No route calculated yet</p>';
+            document.getElementById('axleWarningsSection').style.display = 'none';
+        }
+
+        // Update legend based on vehicle type
+        function updateLegend() {
+            const legend = document.getElementById('legend');
+            let html = '';
+
+            if (vehicleType === 'truck' || vehicleType === 'car') {
+                html = `
+                    <div class="legend-item">
+                        <div class="legend-color break"></div>
+                        <span>45-min Break</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color daily"></div>
+                        <span>Daily Rest (11h)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color weekly"></div>
+                        <span>Weekly Rest (45h)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color parking"></div>
+                        <span>Suitable Parking</span>
+                    </div>
+                `;
+                if (vehicleType === 'truck') {
+                    html += `
+                        <div class="legend-item">
+                            <div class="legend-color axle-warning"></div>
+                            <span>Axle Load Warning</span>
+                        </div>
+                    `;
+                }
+            } else if (vehicleType === 'hiker') {
+                html = `
+                    <div class="legend-item">
+                        <div class="legend-color daily-segment"></div>
+                        <span>Daily Segment (40 km)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color hiker-rest"></div>
+                        <span>Rest (11.295 km)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color hiker-rest-alt"></div>
+                        <span>Alternative Rest (2.275 km)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color water"></div>
+                        <span>Drinking Water</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color parking"></div>
+                        <span>Shelters/Huts/Camping</span>
+                    </div>
+                `;
+            } else if (vehicleType === 'bike') {
+                html = `
+                    <div class="legend-item">
+                        <div class="legend-color daily-segment"></div>
+                        <span>Daily Segment (70 km)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color segment-break"></div>
+                        <span>Segment Break (17 km)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color water"></div>
+                        <span>Drinking Water</span>
+                    </div>
+                `;
+            }
+
+            legend.innerHTML = html;
+        }
+
+        // Initialize legend
+        updateLegend();
+
+        // Update click mode buttons
+        function updateClickModeButtons() {
+            document.querySelectorAll('.click-mode-btn').forEach(btn => {
+                btn.classList.remove('active');
+                if (btn.dataset.mode === clickMode) {
+                    btn.classList.add('active');
+                }
+            });
+            
+            // Show/hide via points list
+            const viaList = document.getElementById('viaPointsList');
+            if (viaPoints.length > 0) {
+                viaList.style.display = 'block';
+            } else {
+                viaList.style.display = 'none';
+            }
+        }
+
+        // Handle map click
+        async function handleMapClick(e) {
+            if (clickMode === 'off') return;
+            
+            const lat = e.latlng.lat;
+            const lon = e.latlng.lng;
+            
+            // Show loading
+            const loadingDiv = document.getElementById('loading');
+            const loadingText = document.getElementById('loadingText');
+            loadingDiv.style.display = 'block';
+            loadingText.textContent = 'Getting address...';
+            
+            try {
+                // Reverse geocode to get address
+                await delay(1000); // Rate limiting
+                const response = await fetch(
+                    `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`,
+                    {
+                        headers: {
+                            'User-Agent': 'RoutePlanner/1.0'
+                        }
+                    }
+                );
+                const data = await response.json();
+                const address = data.display_name || `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+                
+                if (clickMode === 'start') {
+                    // Remove old start marker
+                    if (startMarker) {
+                        map.removeLayer(startMarker);
+                    }
+                    
+                    // Add new start marker
+                    startMarker = L.marker([lat, lon], {
+                        icon: L.divIcon({
+                            className: 'start-marker',
+                            html: '<div style="background: #2ecc71; width: 20px; height: 20px; border-radius: 50%; border: 3px solid white; box-shadow: 0 0 0 2px #2ecc71;"></div>',
+                            iconSize: [20, 20]
+                        })
+                    }).addTo(map);
+                    startMarker.bindPopup(`<strong>Start</strong><br>${address}`).openPopup();
+                    
+                    // Update input field
+                    document.getElementById('startAddress').value = address;
+                    
+                } else if (clickMode === 'end') {
+                    // Remove old end marker
+                    if (endMarker) {
+                        map.removeLayer(endMarker);
+                    }
+                    
+                    // Add new end marker
+                    endMarker = L.marker([lat, lon], {
+                        icon: L.divIcon({
+                            className: 'end-marker',
+                            html: '<div style="background: #e74c3c; width: 20px; height: 20px; border-radius: 50%; border: 3px solid white; box-shadow: 0 0 0 2px #e74c3c;"></div>',
+                            iconSize: [20, 20]
+                        })
+                    }).addTo(map);
+                    endMarker.bindPopup(`<strong>End</strong><br>${address}`).openPopup();
+                    
+                    // Update input field
+                    document.getElementById('destinationAddress').value = address;
+                    
+                } else if (clickMode === 'via') {
+                    // Add via point
+                    const viaPoint = { lat, lon, name: address };
+                    viaPoints.push(viaPoint);
+                    
+                    // Add via marker
+                    const viaMarker = L.marker([lat, lon], {
+                        icon: L.divIcon({
+                            className: 'via-marker',
+                            html: '<div style="background: #9b59b6; width: 18px; height: 18px; border-radius: 50%; border: 3px solid white; box-shadow: 0 0 0 2px #9b59b6;"></div>',
+                            iconSize: [18, 18]
+                        })
+                    }).addTo(map);
+                    viaMarker.bindPopup(`<strong>Via Point</strong><br>${address}`);
+                    viaMarkers.push(viaMarker);
+                    
+                    // Update via points list
+                    updateViaPointsList();
+                }
+                
+            } catch (error) {
+                console.error('Reverse geocoding failed:', error);
+                // Still add marker with coordinates
+                const coords = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+                
+                if (clickMode === 'start') {
+                    if (startMarker) map.removeLayer(startMarker);
+                    startMarker = L.marker([lat, lon]).addTo(map);
+                    startMarker.bindPopup(`<strong>Start</strong><br>${coords}`).openPopup();
+                    document.getElementById('startAddress').value = coords;
+                } else if (clickMode === 'end') {
+                    if (endMarker) map.removeLayer(endMarker);
+                    endMarker = L.marker([lat, lon]).addTo(map);
+                    endMarker.bindPopup(`<strong>End</strong><br>${coords}`).openPopup();
+                    document.getElementById('destinationAddress').value = coords;
+                } else if (clickMode === 'via') {
+                    viaPoints.push({ lat, lon, name: coords });
+                    const viaMarker = L.marker([lat, lon]).addTo(map);
+                    viaMarker.bindPopup(`<strong>Via Point</strong><br>${coords}`);
+                    viaMarkers.push(viaMarker);
+                    updateViaPointsList();
+                }
+            } finally {
+                loadingDiv.style.display = 'none';
+            }
+        }
+
+        // Update via points list UI
+        function updateViaPointsList() {
+            const container = document.getElementById('viaPointsContainer');
+            container.innerHTML = viaPoints.map((point, index) => `
+                <div class="via-point-item">
+                    <span class="via-point-name" title="${point.name}">${point.name}</span>
+                    <button class="via-point-remove" onclick="removeViaPoint(${index})">Remove</button>
+                </div>
+            `).join('');
+            updateClickModeButtons();
+        }
+
+        // Remove via point
+        function removeViaPoint(index) {
+            if (index >= 0 && index < viaPoints.length) {
+                // Remove marker
+                if (viaMarkers[index]) {
+                    map.removeLayer(viaMarkers[index]);
+                    viaMarkers.splice(index, 1);
+                }
+                // Remove point
+                viaPoints.splice(index, 1);
+                updateViaPointsList();
+            }
+        }
+        
+        // Make removeViaPoint available globally
+        window.removeViaPoint = removeViaPoint;
+
+        // Haversine formula for distance calculation
+        function haversineDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371; // Earth radius in km
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        }
+
+        // Delay function for rate limiting
+        function delay(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        // Geocode address using Nominatim
+        async function geocodeAddress(address) {
+            try {
+                const response = await fetch(
+                    `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1`,
+                    {
+                        headers: {
+                            'User-Agent': 'RoutePlanner/1.0'
+                        }
+                    }
+                );
+                const data = await response.json();
+                if (data.length === 0) {
+                    throw new Error(`Address not found: ${address}`);
+                }
+                return {
+                    lat: parseFloat(data[0].lat),
+                    lon: parseFloat(data[0].lon),
+                    displayName: data[0].display_name
+                };
+            } catch (error) {
+                throw new Error(`Geocoding failed: ${error.message}`);
+            }
+        }
+
+        // Reverse geocode to get country
+        async function getCountry(lat, lon) {
+            try {
+                await delay(1000); // Rate limiting
+                const response = await fetch(
+                    `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`,
+                    {
+                        headers: {
+                            'User-Agent': 'RoutePlanner/1.0'
+                        }
+                    }
+                );
+                const data = await response.json();
+                return data.address?.country || 'Unknown';
+            } catch (error) {
+                console.error('Reverse geocoding failed:', error);
+                return 'Unknown';
+            }
+        }
+
+        // Get route from OSRM (supports multiple waypoints)
+        async function getRoute(startLat, startLon, destLat, destLon, viaPoints = []) {
+            try {
+                let profile;
+                if (vehicleType === 'hiker') {
+                    profile = 'foot';
+                } else if (vehicleType === 'bike') {
+                    profile = 'cycling';
+                } else {
+                    profile = 'driving';
+                }
+                
+                // Build waypoints string: start;via1;via2;...;end
+                let waypoints = `${startLon},${startLat}`;
+                viaPoints.forEach(via => {
+                    waypoints += `;${via.lon},${via.lat}`;
+                });
+                waypoints += `;${destLon},${destLat}`;
+                
+                const response = await fetch(
+                    `https://router.project-osrm.org/route/v1/${profile}/${waypoints}?overview=full&geometries=geojson`
+                );
+                const data = await response.json();
+                if (data.code !== 'Ok') {
+                    throw new Error('Route calculation failed');
+                }
+                return data;
+            } catch (error) {
+                throw new Error(`Routing failed: ${error.message}`);
+            }
+        }
+
+        // Find hiking routes (route=hiking, type=route) between waypoints
+        async function findHikingRoutes(startLat, startLon, endLat, endLon) {
+            try {
+                // Search for hiking routes in the area between start and end
+                const centerLat = (startLat + endLat) / 2;
+                const centerLon = (startLon + endLon) / 2;
+                const distance = haversineDistance(startLat, startLon, endLat, endLon);
+                const radius = Math.max(5000, distance * 1000 * 0.5); // At least 5km, or half the distance
+                
+                const query = `
+                    [out:json][timeout:25];
+                    (
+                      relation["route"="hiking"]["type"="route"](around:${radius},${centerLat},${centerLon});
+                      way["route"="hiking"]["type"="route"](around:${radius},${centerLat},${centerLon});
+                    );
+                    out center;
+                `;
+
+                const response = await fetch('https://overpass-api.de/api/interpreter', {
+                    method: 'POST',
+                    body: query
+                });
+
+                const data = await response.json();
+                return data.elements || [];
+            } catch (error) {
+                console.error('Hiking route search failed:', error);
+                return [];
+            }
+        }
+
+        // Find drinking water points along route
+        async function findDrinkingWater(lat, lon, radius = 2000) {
+            try {
+                const query = `
+                    [out:json][timeout:25];
+                    (
+                      node["drinking_water:refill"="yes"](around:${radius},${lat},${lon});
+                      node["drinking_water"="yes"](around:${radius},${lat},${lon});
+                      node["natural"="spring"](around:${radius},${lat},${lon});
+                    );
+                    out body;
+                `;
+
+                const response = await fetch('https://overpass-api.de/api/interpreter', {
+                    method: 'POST',
+                    body: query
+                });
+
+                const data = await response.json();
+                const waterPoints = [];
+
+                for (const element of data.elements || []) {
+                    if (element.type !== 'node') continue;
+
+                    const isSpring = element.tags?.natural === 'spring';
+                    const name = element.tags?.name || 
+                                (isSpring ? 'Natural Spring' : 'Drinking Water');
+                    
+                    waterPoints.push({
+                        lat: element.lat,
+                        lon: element.lon,
+                        name: name,
+                        type: isSpring ? 'spring' : 'water',
+                        note: isSpring ? 'Drink it at your own risk' : null
+                    });
+                }
+
+                return waterPoints;
+            } catch (error) {
+                console.error('Water point search failed:', error);
+                return [];
+            }
+        }
+
+        // Check road for axle load restrictions (trucks only)
+        async function checkAxleLoadRestrictions(lat, lon) {
+            try {
+                const query = `
+                    [out:json][timeout:25];
+                    way(around:50,${lat},${lon})["highway"];
+                    out body;
+                `;
+
+                const response = await fetch('https://overpass-api.de/api/interpreter', {
+                    method: 'POST',
+                    body: query
+                });
+
+                const data = await response.json();
+                const warnings = [];
+
+                for (const element of data.elements || []) {
+                    if (element.type !== 'way' || !element.tags) continue;
+
+                    const tags = element.tags;
+                    const maxAxleLoad = parseFloat(tags['maxaxleload']) || parseFloat(tags['maxaxleload:hgv']);
+                    const maxWeight = parseFloat(tags['maxweight']) || parseFloat(tags['maxweight:hgv']);
+                    const vehicleRestriction = tags['motor_vehicle'] === 'no' || tags['hgv'] === 'no' || tags['motorcar'] === 'no';
+
+                    if (vehicleRestriction) {
+                        warnings.push({
+                            lat: lat,
+                            lon: lon,
+                            type: 'restriction',
+                            message: `Road prohibits trucks/HGVs`,
+                            highway: tags.highway || 'unknown'
+                        });
+                    } else if (maxAxleLoad && truckSpecs.axleLoad > maxAxleLoad) {
+                        warnings.push({
+                            lat: lat,
+                            lon: lon,
+                            type: 'axleload',
+                            message: `Max axle load: ${maxAxleLoad} tonnes (your truck: ${truckSpecs.axleLoad} tonnes)`,
+                            highway: tags.highway || 'unknown',
+                            maxAxleLoad: maxAxleLoad
+                        });
+                    } else if (maxWeight && truckSpecs.totalWeight > maxWeight) {
+                        warnings.push({
+                            lat: lat,
+                            lon: lon,
+                            type: 'weight',
+                            message: `Max weight: ${maxWeight} tonnes (your truck: ${truckSpecs.totalWeight} tonnes)`,
+                            highway: tags.highway || 'unknown',
+                            maxWeight: maxWeight
+                        });
+                    }
+                }
+
+                return warnings;
+            } catch (error) {
+                console.error('Axle load check failed:', error);
+                return [];
+            }
+        }
+
+        // Find parking spots for trucks/cars
+        async function findParkingSpots(lat, lon, radius = 5000) {
+            try {
+                const query = `
+                    [out:json][timeout:25];
+                    (
+                      way["highway"~"^(unclassified|service|track|rest_area|tertiary)$"](around:${radius},${lat},${lon});
+                      node["highway"~"^(unclassified|service|track|rest_area|tertiary)$"](around:${radius},${lat},${lon});
+                    );
+                    out center;
+                `;
+
+                const response = await fetch('https://overpass-api.de/api/interpreter', {
+                    method: 'POST',
+                    body: query
+                });
+
+                const data = await response.json();
+                const spots = [];
+
+                for (const element of data.elements || []) {
+                    let spotLat, spotLon;
+                    if (element.type === 'way' && element.center) {
+                        spotLat = element.center.lat;
+                        spotLon = element.center.lon;
+                    } else if (element.type === 'node') {
+                        spotLat = element.lat;
+                        spotLon = element.lon;
+                    } else {
+                        continue;
+                    }
+
+                    // Check for buildings/structures within 150m
+                    const hasBuildings = await checkForBuildings(spotLat, spotLon);
+                    if (!hasBuildings) {
+                        spots.push({
+                            lat: spotLat,
+                            lon: spotLon,
+                            highway: element.tags?.highway || 'unknown',
+                            name: element.tags?.name || 'Unnamed road'
+                        });
+                    }
+                }
+
+                return spots;
+            } catch (error) {
+                console.error('Parking spot search failed:', error);
+                return [];
+            }
+        }
+
+        // Find rest spots for hikers
+        async function findHikerRestSpots(lat, lon, radius = 5000) {
+            try {
+                const query = `
+                    [out:json][timeout:25];
+                    (
+                      node["tourism"="wilderness_hut"](around:${radius},${lat},${lon});
+                      node["amenity"="shelter"](around:${radius},${lat},${lon});
+                      node["tourism"="camp_site"](around:${radius},${lat},${lon});
+                      node["leisure"="picnic_table"](around:${radius},${lat},${lon});
+                    );
+                    out body;
+                `;
+
+                const response = await fetch('https://overpass-api.de/api/interpreter', {
+                    method: 'POST',
+                    body: query
+                });
+
+                const data = await response.json();
+                const spots = [];
+
+                for (const element of data.elements || []) {
+                    if (element.type !== 'node') continue;
+
+                    spots.push({
+                        lat: element.lat,
+                        lon: element.lon,
+                        type: element.tags?.tourism || element.tags?.amenity || element.tags?.leisure || 'rest_area',
+                        name: element.tags?.name || 'Unnamed spot'
+                    });
+                }
+
+                return spots;
+            } catch (error) {
+                console.error('Hiker rest spot search failed:', error);
+                return [];
+            }
+        }
+
+        // Check for buildings/structures within 150m
+        async function checkForBuildings(lat, lon) {
+            try {
+                const query = `
+                    [out:json][timeout:25];
+                    (
+                      way["building"](around:150,${lat},${lon});
+                      node["man_made"](around:150,${lat},${lon});
+                    );
+                    out count;
+                `;
+
+                const response = await fetch('https://overpass-api.de/api/interpreter', {
+                    method: 'POST',
+                    body: query
+                });
+
+                const data = await response.json();
+                return (data.elements?.length || 0) > 0;
+            } catch (error) {
+                console.error('Building check failed:', error);
+                return false;
+            }
+        }
+
+        // Calculate rest stops along route
+        function calculateRestStops(route, departureTime) {
+            const restStops = [];
+            const coordinates = route.routes[0].geometry.coordinates;
+            const distance = route.routes[0].distance / 1000; // km
+            const duration = route.routes[0].duration; // seconds
+
+            let currentTime = new Date(departureTime);
+
+            if (vehicleType === 'hiker') {
+                // Hiker: 40 km per day suggested maximum
+                let accumulatedDistance = 0; // meters
+                let dayCount = 0;
+                let restCount = 0;
+                let altRestCount = 0;
+
+                for (let i = 0; i < coordinates.length - 1; i++) {
+                    const [lon1, lat1] = coordinates[i];
+                    const [lon2, lat2] = coordinates[i + 1];
+                    const segmentDistance = haversineDistance(lat1, lon1, lat2, lon2) * 1000; // meters
+                    accumulatedDistance += segmentDistance;
+
+                    // Daily segment: 40 km per day
+                    if (accumulatedDistance >= (dayCount + 1) * 40000) {
+                        dayCount++;
+                        restStops.push({
+                            type: 'daily-segment',
+                            lat: lat2,
+                            lon: lon2,
+                            distance: accumulatedDistance / 1000, // km
+                            day: dayCount,
+                            index: i + 1
+                        });
+                    }
+
+                    // Check for main rest (11.295 km)
+                    if (accumulatedDistance >= (restCount + 1) * 11295) {
+                        restCount++;
+                        restStops.push({
+                            type: 'hiker-rest',
+                            lat: lat2,
+                            lon: lon2,
+                            distance: accumulatedDistance / 1000, // km
+                            index: i + 1
+                        });
+                    }
+
+                    // Check for alternative rest (2.2752 km)
+                    if (accumulatedDistance >= (altRestCount + 1) * 2275.2) {
+                        altRestCount++;
+                        // Only add if not too close to main rest
+                        const lastMainRest = restStops.filter(s => s.type === 'hiker-rest').pop();
+                        if (!lastMainRest || (accumulatedDistance - lastMainRest.distance * 1000) > 1000) {
+                            restStops.push({
+                                type: 'hiker-rest-alt',
+                                lat: lat2,
+                                lon: lon2,
+                                distance: accumulatedDistance / 1000, // km
+                                index: i + 1
+                            });
+                        }
+                    }
+                }
+            } else if (vehicleType === 'bike') {
+                // Cycling: 70 km per day, 4 segments of 17 km each
+                let accumulatedDistance = 0; // meters
+                let dayCount = 0;
+                let segmentCount = 0;
+
+                for (let i = 0; i < coordinates.length - 1; i++) {
+                    const [lon1, lat1] = coordinates[i];
+                    const [lon2, lat2] = coordinates[i + 1];
+                    const segmentDistance = haversineDistance(lat1, lon1, lat2, lon2) * 1000; // meters
+                    accumulatedDistance += segmentDistance;
+
+                    // Daily segment: 70 km per day
+                    if (accumulatedDistance >= (dayCount + 1) * 70000) {
+                        dayCount++;
+                        restStops.push({
+                            type: 'daily-segment',
+                            lat: lat2,
+                            lon: lon2,
+                            distance: accumulatedDistance / 1000, // km
+                            day: dayCount,
+                            index: i + 1
+                        });
+                    }
+
+                    // Segment breaks: 17 km per segment (4 segments per day)
+                    if (accumulatedDistance >= (segmentCount + 1) * 17000) {
+                        segmentCount++;
+                        restStops.push({
+                            type: 'segment-break',
+                            lat: lat2,
+                            lon: lon2,
+                            distance: accumulatedDistance / 1000, // km
+                            segment: segmentCount,
+                            index: i + 1
+                        });
+                    }
+                }
+            } else {
+                // Truck/Car rest rules (EU Regulation EC 561/2006)
+                const avgSpeed = 80; // km/h
+                let totalDrivingTime = 0; // hours
+                let daysDriving = 0;
+                let accumulatedDistance = 0;
+                let breakCount = 0;
+                let dailyRestCount = 0;
+                let weeklyRestCount = 0;
+
+                const breakInterval = 4.5; // hours
+                const dailyRestInterval = 9; // hours
+                const weeklyRestDays = 6;
+
+                for (let i = 0; i < coordinates.length - 1; i++) {
+                    const [lon1, lat1] = coordinates[i];
+                    const [lon2, lat2] = coordinates[i + 1];
+                    const segmentDistance = haversineDistance(lat1, lon1, lat2, lon2);
+                    accumulatedDistance += segmentDistance;
+                    const segmentTime = segmentDistance / avgSpeed; // hours
+                    totalDrivingTime += segmentTime;
+
+                    // Check for break (every 4.5 hours)
+                    if (totalDrivingTime >= (breakCount + 1) * breakInterval) {
+                        breakCount++;
+                        restStops.push({
+                            type: 'break',
+                            lat: lat2,
+                            lon: lon2,
+                            distance: accumulatedDistance,
+                            time: new Date(currentTime.getTime() + totalDrivingTime * 3600000),
+                            duration: 45, // minutes
+                            index: i + 1
+                        });
+                    }
+
+                    // Check for daily rest (every 9 hours)
+                    if (totalDrivingTime >= (dailyRestCount + 1) * dailyRestInterval) {
+                        dailyRestCount++;
+                        daysDriving++;
+                        restStops.push({
+                            type: 'daily',
+                            lat: lat2,
+                            lon: lon2,
+                            distance: accumulatedDistance,
+                            time: new Date(currentTime.getTime() + totalDrivingTime * 3600000),
+                            duration: 11, // hours
+                            index: i + 1
+                        });
+                    }
+
+                    // Check for weekly rest (every 6 days)
+                    if (daysDriving >= weeklyRestDays && weeklyRestCount === 0) {
+                        weeklyRestCount++;
+                        restStops.push({
+                            type: 'weekly',
+                            lat: lat2,
+                            lon: lon2,
+                            distance: accumulatedDistance,
+                            time: new Date(currentTime.getTime() + totalDrivingTime * 3600000),
+                            duration: 45, // hours
+                            index: i + 1
+                        });
+                        daysDriving = 0;
+                    }
+                }
+            }
+
+            return restStops;
+        }
+
+        // Clear map
+        function clearMap() {
+            markers.forEach(marker => map.removeLayer(marker));
+            markers = [];
+            if (routePolyline) {
+                map.removeLayer(routePolyline);
+                routePolyline = null;
+            }
+            // Clear start/end/via markers
+            if (startMarker) {
+                map.removeLayer(startMarker);
+                startMarker = null;
+            }
+            if (endMarker) {
+                map.removeLayer(endMarker);
+                endMarker = null;
+            }
+            viaMarkers.forEach(marker => map.removeLayer(marker));
+            viaMarkers = [];
+        }
+
+        // Add marker to map
+        function addMarker(lat, lon, type, popupContent) {
+            let color;
+            switch (type) {
+                case 'break':
+                    color = '#f39c12';
+                    break;
+                case 'daily':
+                    color = '#e74c3c';
+                    break;
+                case 'weekly':
+                    color = '#9b59b6';
+                    break;
+                case 'parking':
+                    color = '#27ae60';
+                    break;
+                case 'hiker-rest':
+                    color = '#3498db';
+                    break;
+                case 'hiker-rest-alt':
+                    color = '#5dade2';
+                    break;
+                case 'axle-warning':
+                    color = '#f1c40f';
+                    break;
+                case 'water':
+                    color = '#3498db';
+                    break;
+                case 'daily-segment':
+                    color = '#16a085';
+                    break;
+                case 'segment-break':
+                    color = '#f39c12';
+                    break;
+                case 'start':
+                    color = '#2ecc71';
+                    break;
+                case 'end':
+                    color = '#e74c3c';
+                    break;
+                default:
+                    color = '#3498db';
+            }
+
+            const marker = L.circleMarker([lat, lon], {
+                radius: 8,
+                fillColor: color,
+                color: '#fff',
+                weight: 2,
+                opacity: 1,
+                fillOpacity: 0.8
+            }).addTo(map);
+
+            marker.bindPopup(popupContent);
+            markers.push(marker);
+        }
+
+        // Update route summary
+        function updateRouteSummary(route, startName, destName) {
+            const distance = (route.routes[0].distance / 1000).toFixed(1);
+            const duration = route.routes[0].duration;
+            const hours = Math.floor(duration / 3600);
+            const minutes = Math.floor((duration % 3600) / 60);
+
+            document.getElementById('routeSummary').innerHTML = `
+                <div class="route-summary">
+                    <div class="route-summary-item">
+                        <span><strong>Vehicle:</strong></span>
+                        <span>${vehicleType.charAt(0).toUpperCase() + vehicleType.slice(1)}</span>
+                    </div>
+                    <div class="route-summary-item">
+                        <span><strong>From:</strong></span>
+                        <span>${startName}</span>
+                    </div>
+                    <div class="route-summary-item">
+                        <span><strong>To:</strong></span>
+                        <span>${destName}</span>
+                    </div>
+                    <div class="route-summary-item">
+                        <span><strong>Distance:</strong></span>
+                        <span>${distance} km</span>
+                    </div>
+                    <div class="route-summary-item">
+                        <span><strong>Duration:</strong></span>
+                        <span>${hours}h ${minutes}m</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Update rest stops list
+        function updateRestStopsList(restStops) {
+            const list = document.getElementById('restStopsList');
+            if (restStops.length === 0) {
+                list.innerHTML = '<p style="color: #999;">No rest stops needed for this route</p>';
+                return;
+            }
+
+            list.innerHTML = restStops.map((stop, index) => {
+                let typeLabel, timeStr = '';
+                
+                if (vehicleType === 'hiker') {
+                    if (stop.type === 'daily-segment') {
+                        typeLabel = `Day ${stop.day} End (40 km suggested)`;
+                        timeStr = `Distance: ${stop.distance.toFixed(2)} km`;
+                    } else if (stop.type === 'hiker-rest') {
+                        typeLabel = 'Rest (11.295 km)';
+                        timeStr = `Distance: ${stop.distance.toFixed(2)} km`;
+                    } else {
+                        typeLabel = 'Alternative Rest (2.275 km)';
+                        timeStr = `Distance: ${stop.distance.toFixed(2)} km`;
+                    }
+                } else if (vehicleType === 'bike') {
+                    if (stop.type === 'daily-segment') {
+                        typeLabel = `Day ${stop.day} End (70 km suggested)`;
+                        timeStr = `Distance: ${stop.distance.toFixed(2)} km`;
+                    } else if (stop.type === 'segment-break') {
+                        typeLabel = `Segment ${stop.segment} Break (17 km)`;
+                        timeStr = `Distance: ${stop.distance.toFixed(2)} km`;
+                    } else {
+                        typeLabel = stop.type;
+                        timeStr = `Distance: ${stop.distance.toFixed(2)} km`;
+                    }
+                } else {
+                    typeLabel = {
+                        'break': '45-min Break',
+                        'daily': 'Daily Rest (11h)',
+                        'weekly': 'Weekly Rest (45h)'
+                    }[stop.type] || stop.type;
+                    timeStr = `Time: ${stop.time.toLocaleString()}<br>Distance: ${stop.distance.toFixed(1)} km`;
+                }
+
+                return `
+                    <div class="rest-stop-item ${stop.type}" onclick="map.setView([${stop.lat}, ${stop.lon}], 12)">
+                        <div class="rest-stop-title">${typeLabel}</div>
+                        <div class="rest-stop-details">
+                            ${timeStr}<br>
+                            Location: ${stop.lat.toFixed(4)}, ${stop.lon.toFixed(4)}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Update axle warnings
+        function updateAxleWarnings(warnings) {
+            const warningsDiv = document.getElementById('axleWarnings');
+            const section = document.getElementById('axleWarningsSection');
+
+            if (warnings.length === 0) {
+                warningsDiv.innerHTML = '<p style="color: #999;">No axle load restrictions found</p>';
+                section.style.display = vehicleType === 'truck' ? 'block' : 'none';
+                return;
+            }
+
+            warningsDiv.innerHTML = warnings.map(warning => `
+                <div class="axle-warning-item">
+                    <div class="axle-warning-title">⚠️ Warning</div>
+                    <div class="axle-warning-text">
+                        ${warning.message}<br>
+                        Road: ${warning.highway}<br>
+                        Location: ${warning.lat.toFixed(4)}, ${warning.lon.toFixed(4)}
+                    </div>
+                </div>
+            `).join('');
+
+            section.style.display = 'block';
+        }
+
+        // Update country warnings
+        function updateCountryWarnings(countries) {
+            const warningsDiv = document.getElementById('countryWarnings');
+            const section = document.getElementById('countryWarningsSection');
+
+            if (vehicleType === 'hiker' || vehicleType === 'bike') {
+                section.style.display = 'none';
+                return;
+            }
+
+            const uniqueCountries = [...new Set(countries)];
+
+            warningsDiv.innerHTML = uniqueCountries.map(country => {
+                const rule = COUNTRY_RULES[country];
+                if (!rule) return '';
+
+                return `
+                    <div class="country-warning ${rule.class}">
+                        <div class="country-warning-title">${country}</div>
+                        <div class="country-warning-text">${rule.rules}</div>
+                    </div>
+                `;
+            }).join('') || '<p style="color: #999;">No Nordic countries in route</p>';
+
+            section.style.display = 'block';
+        }
+
+        // Main route calculation function
+        async function calculateRoute() {
+            const startAddress = document.getElementById('startAddress').value.trim();
+            const destAddress = document.getElementById('destinationAddress').value.trim();
+            const departureTime = document.getElementById('departureTime').value;
+
+            if (!startAddress || !destAddress || !departureTime) {
+                alert('Please fill in all required fields');
+                return;
+            }
+
+            if (vehicleType === 'truck') {
+                truckSpecs.totalWeight = parseFloat(document.getElementById('totalWeight').value) || 0;
+                truckSpecs.axleLoad = parseFloat(document.getElementById('axleLoad').value) || 0;
+                truckSpecs.numAxles = parseInt(document.getElementById('numAxles').value) || 2;
+
+                if (truckSpecs.totalWeight <= 0 || truckSpecs.axleLoad <= 0) {
+                    alert('Please enter valid truck weight and axle load');
+                    return;
+                }
+            }
+
+            const loadingDiv = document.getElementById('loading');
+            const loadingText = document.getElementById('loadingText');
+            const calculateBtn = document.getElementById('calculateBtn');
+
+            try {
+                loadingDiv.style.display = 'block';
+                calculateBtn.disabled = true;
+                clearMap();
+
+                // Geocode addresses
+                loadingText.textContent = 'Geocoding start address...';
+                const startCoords = await geocodeAddress(startAddress);
+                await delay(1000);
+
+                loadingText.textContent = 'Geocoding destination address...';
+                const destCoords = await geocodeAddress(destAddress);
+
+                // Get route (with via points if any)
+                loadingText.textContent = 'Calculating route...';
+                const route = await getRoute(
+                    startCoords.lat, startCoords.lon,
+                    destCoords.lat, destCoords.lon,
+                    viaPoints
+                );
+
+                // For hiking, search for hiking routes
+                if (vehicleType === 'hiker') {
+                    loadingText.textContent = 'Searching for hiking routes...';
+                    const hikingRoutes = await findHikingRoutes(
+                        startCoords.lat, startCoords.lon,
+                        destCoords.lat, destCoords.lon
+                    );
+                    // Note: Hiking routes found but using OSRM foot profile for routing
+                    // Could be used for display or alternative routing in future
+                }
+
+                // Draw route on map
+                const coordinates = route.routes[0].geometry.coordinates.map(coord => [coord[1], coord[0]]);
+                const routeColor = VEHICLE_COLORS[vehicleType] || '#3498db';
+                routePolyline = L.polyline(coordinates, {
+                    color: routeColor,
+                    weight: 4,
+                    opacity: 0.7
+                }).addTo(map);
+
+                map.fitBounds(routePolyline.getBounds(), { padding: [50, 50] });
+
+                // Add start and end markers
+                addMarker(startCoords.lat, startCoords.lon, 'start', `<strong>Start</strong><br>${startCoords.displayName}`);
+                addMarker(destCoords.lat, destCoords.lon, 'end', `<strong>Destination</strong><br>${destCoords.displayName}`);
+
+                // Calculate rest stops
+                loadingText.textContent = 'Calculating rest stops...';
+                const restStops = calculateRestStops(route, departureTime);
+
+                // Get countries and find parking/rest spots
+                const countries = [];
+                const axleWarnings = [];
+
+                loadingText.textContent = 'Finding rest spots and checking restrictions...';
+
+                for (let i = 0; i < restStops.length; i++) {
+                    const stop = restStops[i];
+                    loadingText.textContent = `Processing rest stop ${i + 1} of ${restStops.length}...`;
+
+                    // Get country (for trucks/cars)
+                    if (vehicleType !== 'hiker') {
+                        const country = await getCountry(stop.lat, stop.lon);
+                        countries.push(country);
+                        stop.country = country;
+                    }
+
+                    // Check axle load restrictions (trucks only)
+                    if (vehicleType === 'truck') {
+                        const warnings = await checkAxleLoadRestrictions(stop.lat, stop.lon);
+                        warnings.forEach(warning => {
+                            if (!axleWarnings.find(w => w.lat === warning.lat && w.lon === warning.lon)) {
+                                axleWarnings.push(warning);
+                                addMarker(
+                                    warning.lat, warning.lon, 'axle-warning',
+                                    `<strong>⚠️ Axle Load Warning</strong><br>${warning.message}<br>Road: ${warning.highway}`
+                                );
+                            }
+                        });
+                    }
+
+                    // Find parking/rest spots and water points
+                    if (vehicleType === 'hiker' || vehicleType === 'bike') {
+                        // Find water points for hiking and cycling
+                        const waterPoints = await findDrinkingWater(stop.lat, stop.lon, 2000);
+                        waterPoints.forEach(water => {
+                            const popupContent = water.note 
+                                ? `<strong>${water.name}</strong><br>⚠️ ${water.note}<br>Coordinates: ${water.lat.toFixed(4)}, ${water.lon.toFixed(4)}`
+                                : `<strong>${water.name}</strong><br>Coordinates: ${water.lat.toFixed(4)}, ${water.lon.toFixed(4)}`;
+                            addMarker(water.lat, water.lon, 'water', popupContent);
+                        });
+
+                        if (vehicleType === 'hiker') {
+                            const restSpots = await findHikerRestSpots(stop.lat, stop.lon);
+                            stop.restSpots = restSpots;
+
+                            restSpots.slice(0, 3).forEach(spot => {
+                                addMarker(
+                                    spot.lat, spot.lon, 'parking',
+                                    `<strong>${spot.type}</strong><br>${spot.name}<br>Coordinates: ${spot.lat.toFixed(4)}, ${spot.lon.toFixed(4)}`
+                                );
+                            });
+                        }
+
+                        // Add daily segment and rest markers
+                        if (stop.type === 'daily-segment') {
+                            const popupContent = vehicleType === 'hiker'
+                                ? `<strong>Day ${stop.day} End</strong><br>Suggested maximum: 40 km per day<br>Distance: ${stop.distance.toFixed(2)} km<br>Coordinates: ${stop.lat.toFixed(4)}, ${stop.lon.toFixed(4)}`
+                                : `<strong>Day ${stop.day} End</strong><br>Suggested maximum: 70 km per day<br>Distance: ${stop.distance.toFixed(2)} km<br>Coordinates: ${stop.lat.toFixed(4)}, ${stop.lon.toFixed(4)}`;
+                            addMarker(stop.lat, stop.lon, 'daily-segment', popupContent);
+                        } else if (stop.type === 'segment-break') {
+                            const popupContent = `<strong>Segment ${stop.segment} Break</strong><br>17 km segment break<br>Distance: ${stop.distance.toFixed(2)} km<br>Coordinates: ${stop.lat.toFixed(4)}, ${stop.lon.toFixed(4)}`;
+                            addMarker(stop.lat, stop.lon, 'segment-break', popupContent);
+                        } else if (stop.type === 'hiker-rest' || stop.type === 'hiker-rest-alt') {
+                            const popupContent = `<strong>${stop.type === 'hiker-rest' ? 'Rest (11.295 km)' : 'Alternative Rest (2.275 km)'}</strong><br>Distance: ${stop.distance.toFixed(2)} km<br>Coordinates: ${stop.lat.toFixed(4)}, ${stop.lon.toFixed(4)}`;
+                            addMarker(stop.lat, stop.lon, stop.type, popupContent);
+                        }
+                    } else {
+                        // Trucks/Cars: find parking spots for daily and weekly rests
+                        if (stop.type === 'daily' || stop.type === 'weekly') {
+                            const parkingSpots = await findParkingSpots(stop.lat, stop.lon);
+                            stop.parkingSpots = parkingSpots;
+
+                            parkingSpots.slice(0, 3).forEach(spot => {
+                                const rule = COUNTRY_RULES[stop.country] || {};
+                                addMarker(
+                                    spot.lat, spot.lon, 'parking',
+                                    `<strong>Suitable Parking</strong><br>Road: ${spot.name} (${spot.highway})<br>Country: ${stop.country}<br>${rule.rules ? `Rules: ${rule.rules}` : ''}<br>Coordinates: ${spot.lat.toFixed(4)}, ${spot.lon.toFixed(4)}`
+                                );
+                            });
+                        }
+
+                        // Add rest stop marker
+                        const rule = COUNTRY_RULES[stop.country] || {};
+                        const popupContent = `
+                            <strong>${stop.type === 'break' ? '45-min Break' : stop.type === 'daily' ? 'Daily Rest (11h)' : 'Weekly Rest (45h)'}</strong><br>
+                            Time: ${stop.time.toLocaleString()}<br>
+                            Country: ${stop.country}<br>
+                            ${rule.rules ? `Rules: ${rule.rules}` : ''}<br>
+                            Distance: ${stop.distance.toFixed(1)} km<br>
+                            Coordinates: ${stop.lat.toFixed(4)}, ${stop.lon.toFixed(4)}
+                        `;
+                        addMarker(stop.lat, stop.lon, stop.type, popupContent);
+                    }
+
+                    await delay(1000);
+                }
+
+                // Water points along the route (for hiking and cycling)
+                if (vehicleType === 'hiker' || vehicleType === 'bike') {
+                    loadingText.textContent = 'Finding water points along route...';
+                    // Sample points along the route for water search
+                    const samplePoints = [];
+                    for (let i = 0; i < coordinates.length; i += Math.max(10, Math.floor(coordinates.length / 20))) {
+                        samplePoints.push(coordinates[i]);
+                    }
+                    
+                    for (let i = 0; i < samplePoints.length; i++) {
+                        const [lat, lon] = samplePoints[i];
+                        const waterPoints = await findDrinkingWater(lat, lon, 2000);
+                        waterPoints.forEach(water => {
+                            const popupContent = water.note 
+                                ? `<strong>${water.name}</strong><br>⚠️ ${water.note}<br>Coordinates: ${water.lat.toFixed(4)}, ${water.lon.toFixed(4)}`
+                                : `<strong>${water.name}</strong><br>Coordinates: ${water.lat.toFixed(4)}, ${water.lon.toFixed(4)}`;
+                            addMarker(water.lat, water.lon, 'water', popupContent);
+                        });
+                        await delay(500); // Rate limiting
+                    }
+                }
+
+                // Update UI
+                updateRouteSummary(route, startCoords.displayName, destCoords.displayName);
+                updateRestStopsList(restStops);
+                updateAxleWarnings(axleWarnings);
+                updateCountryWarnings(countries);
+
+                routeData = { route, restStops, startCoords, destCoords };
+
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+                console.error(error);
+            } finally {
+                loadingDiv.style.display = 'none';
+                calculateBtn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
