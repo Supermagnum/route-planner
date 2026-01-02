@@ -512,6 +512,18 @@
                     <option value="hiker">Hiker</option>
                     <option value="bike">Cyclist</option>
                 </select>
+                
+                <div class="routing-service-config" style="margin-top: 15px; padding: 10px; background: #f8f9fa; border-radius: 4px; font-size: 0.9em;">
+                    <label for="orsApiKey" style="display: block; margin-bottom: 5px;">
+                        <strong>OpenRouteService API Key (Optional)</strong>
+                    </label>
+                    <input type="text" id="orsApiKey" placeholder="Leave empty to use OSRM (free, no key needed)" 
+                           style="width: 100%; padding: 5px; border: 1px solid #ddd; border-radius: 3px;">
+                    <p style="margin: 5px 0 0 0; color: #666; font-size: 0.85em;">
+                        Get free key at <a href="https://openrouteservice.org/dev/#/signup" target="_blank">openrouteservice.org</a> 
+                        (2000 requests/day). Enables automatic exclusion of unsafe roads for hikers/cyclists.
+                    </p>
+                </div>
             </div>
             <div class="input-group">
                 <label for="startAddress">Start Address</label>
@@ -642,6 +654,7 @@
         let viaPoints = []; // Array of {lat, lon, name}
         let addedWaterPoints = []; // Track water points to ensure minimum distance
         let addedHuts = []; // Track huts/shelters to ensure minimum distance
+        let orsApiKey = ''; // OpenRouteService API key (optional)
 
         // Country-specific rules (for trucks/cars)
         const COUNTRY_RULES = {
@@ -678,6 +691,22 @@
         document.getElementById('vehicleType').addEventListener('change', handleVehicleTypeChange);
         document.getElementById('calculateBtn').addEventListener('click', calculateRoute);
         document.getElementById('exportGpxBtn').addEventListener('click', exportToGPX);
+        document.getElementById('orsApiKey').addEventListener('input', function() {
+            orsApiKey = this.value.trim();
+            // Store in localStorage for convenience
+            if (orsApiKey) {
+                localStorage.setItem('orsApiKey', orsApiKey);
+            } else {
+                localStorage.removeItem('orsApiKey');
+            }
+        });
+        
+        // Load API key from localStorage if available
+        const savedApiKey = localStorage.getItem('orsApiKey');
+        if (savedApiKey) {
+            document.getElementById('orsApiKey').value = savedApiKey;
+            orsApiKey = savedApiKey;
+        }
         
         // Map click mode buttons
         document.querySelectorAll('.click-mode-btn').forEach(btn => {
@@ -1011,6 +1040,86 @@
             }
         }
 
+        // Get route from OpenRouteService (supports road exclusions)
+        async function getRouteOpenRouteService(startLat, startLon, destLat, destLon, viaPoints = [], vehicleType) {
+            try {
+                let profile;
+                if (vehicleType === 'hiker') {
+                    profile = 'foot-walking';
+                } else if (vehicleType === 'bike') {
+                    profile = 'cycling-regular';
+                } else {
+                    profile = 'driving-car';
+                }
+                
+                // Build coordinates array: [lon, lat] format
+                const coordinates = [[startLon, startLat]];
+                viaPoints.forEach(via => {
+                    coordinates.push([via.lon, via.lat]);
+                });
+                coordinates.push([destLon, destLat]);
+                
+                // For hikers and cyclists, exclude unsafe roads
+                const requestBody = {
+                    coordinates: coordinates,
+                    format: 'geojson'
+                };
+                
+                // Add road exclusions for hikers and cyclists
+                if (vehicleType === 'hiker' || vehicleType === 'bike') {
+                    requestBody.options = {
+                        avoid_features: ['highways', 'tollways']
+                    };
+                }
+                
+                const headers = {
+                    'Content-Type': 'application/json'
+                };
+                
+                // OpenRouteService uses Authorization header with API key
+                if (orsApiKey) {
+                    headers['Authorization'] = orsApiKey;
+                }
+                
+                const response = await fetch(
+                    `https://api.openrouteservice.org/v2/directions/${profile}`,
+                    {
+                        method: 'POST',
+                        headers: headers,
+                        body: JSON.stringify(requestBody)
+                    }
+                );
+                
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                
+                // Convert OpenRouteService format to OSRM-like format for compatibility
+                if (data.routes && data.routes.length > 0) {
+                    const route = data.routes[0];
+                    return {
+                        code: 'Ok',
+                        routes: [{
+                            geometry: route.geometry,
+                            distance: route.summary.distance,
+                            duration: route.summary.duration,
+                            legs: route.segments ? route.segments.map(seg => ({
+                                distance: seg.distance,
+                                duration: seg.duration
+                            })) : []
+                        }]
+                    };
+                } else {
+                    throw new Error('No route found');
+                }
+            } catch (error) {
+                throw new Error(`OpenRouteService routing failed: ${error.message}`);
+            }
+        }
+
         // Get route from OSRM (supports multiple waypoints)
         async function getRoute(startLat, startLon, destLat, destLon, viaPoints = [], alternatives = false) {
             try {
@@ -1047,7 +1156,24 @@
         // Find safer route by checking alternatives
         async function findSaferRoute(startLat, startLon, destLat, destLon, viaPoints, vehicleType) {
             try {
-                // First, get route with alternatives
+                // If OpenRouteService API key is provided, use it (automatically excludes unsafe roads)
+                if (orsApiKey && (vehicleType === 'hiker' || vehicleType === 'bike')) {
+                    try {
+                        const orsRoute = await getRouteOpenRouteService(startLat, startLon, destLat, destLon, viaPoints, vehicleType);
+                        // Still check for any remaining unsafe segments (in case some slip through)
+                        const warnings = await checkRouteSafety(orsRoute, vehicleType);
+                        if (warnings.length === 0) {
+                            return orsRoute; // Perfect route with no unsafe roads
+                        }
+                        // If there are still warnings, fall through to alternative checking
+                        console.log('OpenRouteService route still has unsafe segments, checking alternatives...');
+                    } catch (orsError) {
+                        console.warn('OpenRouteService failed, falling back to OSRM:', orsError);
+                        // Fall through to OSRM
+                    }
+                }
+                
+                // First, get route with alternatives from OSRM
                 const routeData = await getRoute(startLat, startLon, destLat, destLon, viaPoints, true);
                 
                 if (!routeData.routes || routeData.routes.length === 0) {
@@ -1091,8 +1217,20 @@
                 // Return the safest route (lowest score)
                 const bestRoute = routeScores[0];
                 
-                // If the best route still has unsafe segments, we'll warn about them
-                // but at least we've chosen the safest available option
+                // If the best route has unsafe segments, try to add waypoints to avoid them
+                if (bestRoute.unsafeCount > 0) {
+                    console.log(`Route has ${bestRoute.unsafeCount} unsafe segments, attempting to avoid them...`);
+                    // Try to find alternative route by adding intermediate waypoints
+                    const improvedRoute = await tryAvoidUnsafeRoads(
+                        startLat, startLon, destLat, destLon, viaPoints, 
+                        bestRoute.route, vehicleType
+                    );
+                    if (improvedRoute && improvedRoute.routes) {
+                        return improvedRoute;
+                    }
+                }
+                
+                // If improvement failed or no unsafe segments, return best route
                 return bestRoute.route;
             } catch (error) {
                 // If alternatives fail, fall back to regular route
@@ -1244,6 +1382,128 @@
             }
 
             return true; // Trucks and cars can use all roads
+        }
+
+        // Try to avoid unsafe roads by adding intermediate waypoints
+        async function tryAvoidUnsafeRoads(startLat, startLon, destLat, destLon, viaPoints, route, vehicleType) {
+            try {
+                const warnings = await checkRouteSafety(route, vehicleType);
+                if (warnings.length === 0) {
+                    return route; // No unsafe roads
+                }
+
+                // Get coordinates of unsafe segments
+                const coordinates = route.routes[0].geometry.coordinates;
+                const unsafeSegments = [];
+                
+                // For each warning, find the closest point on the route
+                for (const warning of warnings) {
+                    let closestIndex = 0;
+                    let minDist = Infinity;
+                    
+                    for (let i = 0; i < coordinates.length; i++) {
+                        const [lon, lat] = coordinates[i];
+                        const dist = haversineDistance(lat, lon, warning.lat, warning.lon);
+                        if (dist < minDist) {
+                            minDist = dist;
+                            closestIndex = i;
+                        }
+                    }
+                    
+                    unsafeSegments.push({
+                        lat: warning.lat,
+                        lon: warning.lon,
+                        index: closestIndex
+                    });
+                }
+
+                // Try to find alternative routes by adding waypoints that avoid unsafe areas
+                // Search for safe roads near unsafe segments
+                const avoidanceWaypoints = [];
+                
+                for (const segment of unsafeSegments) {
+                    // Search in a 2km radius for safe roads
+                    const safeRoads = await findSafeRoadsNearby(segment.lat, segment.lon, 2000, vehicleType);
+                    if (safeRoads.length > 0) {
+                        // Use the first safe road point as a waypoint to avoid the unsafe segment
+                        avoidanceWaypoints.push({
+                            lat: safeRoads[0].lat,
+                            lon: safeRoads[0].lon,
+                            name: 'Avoidance waypoint'
+                        });
+                    }
+                }
+
+                // If we found avoidance waypoints, try recalculating the route
+                if (avoidanceWaypoints.length > 0) {
+                    // Combine original via points with avoidance waypoints
+                    const allViaPoints = [...viaPoints, ...avoidanceWaypoints];
+                    // Sort by distance along route to maintain order
+                    allViaPoints.sort((a, b) => {
+                        const distA = haversineDistance(startLat, startLon, a.lat, a.lon);
+                        const distB = haversineDistance(startLat, startLon, b.lat, b.lon);
+                        return distA - distB;
+                    });
+                    
+                    const newRoute = await getRoute(startLat, startLon, destLat, destLon, allViaPoints, false);
+                    const newWarnings = await checkRouteSafety(newRoute, vehicleType);
+                    
+                    // If new route has fewer unsafe segments, use it
+                    if (newWarnings.length < warnings.length) {
+                        return newRoute;
+                    }
+                }
+                
+                return null; // Couldn't improve
+            } catch (error) {
+                console.error('Failed to avoid unsafe roads:', error);
+                return null;
+            }
+        }
+
+        // Find safe roads nearby an unsafe location
+        async function findSafeRoadsNearby(lat, lon, radius, vehicleType) {
+            try {
+                const query = `
+                    [out:json][timeout:25];
+                    way(around:${radius},${lat},${lon})["highway"];
+                    out center;
+                `;
+
+                const response = await fetch('https://overpass-api.de/api/interpreter', {
+                    method: 'POST',
+                    body: query
+                });
+
+                const data = await response.json();
+                const safeRoads = [];
+
+                for (const element of data.elements || []) {
+                    if (element.type !== 'way' || !element.tags) continue;
+                    
+                    const roadType = {
+                        highway: element.tags.highway,
+                        foot: element.tags.foot,
+                        hiking: element.tags.hiking,
+                        name: element.tags.name || 'Unnamed road'
+                    };
+                    
+                    if (isRoadSafe(roadType, vehicleType)) {
+                        if (element.center) {
+                            safeRoads.push({
+                                lat: element.center.lat,
+                                lon: element.center.lon,
+                                name: roadType.name
+                            });
+                        }
+                    }
+                }
+
+                return safeRoads;
+            } catch (error) {
+                console.error('Failed to find safe roads:', error);
+                return [];
+            }
         }
 
         // Check route for unsafe road segments (faster version for route comparison)

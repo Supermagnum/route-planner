@@ -63,8 +63,12 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 
 ### Road Safety
 - Automatic route safety checking for hikers and cyclists
-- **Route optimization**: Automatically selects safest route from OSRM alternatives
-- Compares multiple route options and picks the one with fewest unsafe segments
+- **OpenRouteService integration** (optional): When API key is provided, automatically excludes unsafe roads at routing level
+  - Native exclusion of highways, tollways for hikers/cyclists
+  - No post-processing needed - routes are calculated without unsafe roads
+- **OSRM route optimization** (default): Automatically selects safest route from OSRM alternatives
+  - Compares multiple route options and picks the one with fewest unsafe segments
+  - Adds intermediate waypoints to avoid problematic areas when possible
 - Avoids unsafe road types: motorway, trunk, primary, primary_link, motorway_link, trunk_link
 - Safety warnings displayed on map and in sidebar for any remaining unsafe segments
 - Real-time validation of road types along route
@@ -81,9 +85,25 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 
 ## Technology Stack
 
-- **OSRM** - Open Source Routing Machine for route calculation
+### Routing Services
+
+- **OSRM** - Open Source Routing Machine (default, free, no API key required)
   - Profile: `driving` (trucks/cars), `foot` (hikers), `cycling` (cyclists)
   - API: https://router.project-osrm.org/
+  - Used for all vehicle types by default
+  - Includes route optimization for hikers/cyclists to avoid unsafe roads
+
+- **OpenRouteService** - Alternative routing service (optional, requires free API key)
+  - Profile: `driving-car` (trucks/cars), `foot-walking` (hikers), `cycling-regular` (cyclists)
+  - API: https://api.openrouteservice.org/v2/directions/
+  - **Native road exclusion**: Automatically excludes unsafe roads (motorways, trunk, primary) for hikers/cyclists
+  - Free tier: 2000 requests/day
+  - Registration: https://openrouteservice.org/dev/#/signup (no credit card required)
+  - When API key is provided, automatically used for hiker/cyclist routes
+  - Falls back to OSRM if API key is not provided or if request fails
+
+### Other Services
+
 - **Nominatim** - Geocoding and reverse geocoding
   - API: https://nominatim.openstreetmap.org/
 - **Overpass API** - POI data queries
@@ -99,10 +119,14 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 
 1. Open `truck-route-planner.html` in a web browser
 2. Select vehicle type (Truck, Car, Hiker, or Cyclist)
-3. Enter start and destination addresses (or click on map)
-4. Set departure time
-5. For trucks: Enter total weight, axle load, and number of axles
-6. Click "Calculate Route"
+3. (Optional) Enter OpenRouteService API key for better road avoidance for hikers/cyclists
+   - Get free key at https://openrouteservice.org/dev/#/signup
+   - 2000 requests/day free tier
+   - Key is saved in browser for convenience
+4. Enter start and destination addresses (or click on map)
+5. Set departure time
+6. For trucks: Enter total weight, axle load, and number of axles
+7. Click "Calculate Route"
 
 ### Map Clicking
 
@@ -144,7 +168,9 @@ The application implements rate limiting for Nominatim requests:
 - Finds parking spots for overnight rests
 
 ### Hiker Routes
-- Uses OSRM `foot` profile
+- **Routing**: 
+  - OpenRouteService `foot-walking` profile (if API key provided) - automatically excludes unsafe roads
+  - OSRM `foot` profile (default) - with route optimization to avoid unsafe roads
 - Searches for hiking routes (`route=hiking`, `type=route`)
 - Daily segments: 40 km maximum suggested
 - Rest stops at 11.295 km or 2.275 km intervals
@@ -156,7 +182,9 @@ The application implements rate limiting for Nominatim requests:
 - Allowed roads: footway, path, track, steps, bridleway, or roads with hiking/foot designations
 
 ### Cyclist Routes
-- Uses OSRM `cycling` profile
+- **Routing**:
+  - OpenRouteService `cycling-regular` profile (if API key provided) - automatically excludes unsafe roads
+  - OSRM `cycling` profile (default) - with route optimization to avoid unsafe roads
 - Daily segments: 70 km maximum suggested
 - 4 segments per day, 17 km each
 - Segment break markers
@@ -216,10 +244,21 @@ No build process or package manager required.
 
 ## API Services Used
 
-### OSRM Routing
+### OSRM Routing (Default)
 - Endpoint: `https://router.project-osrm.org/route/v1/{profile}/{waypoints}`
 - Profiles: `driving`, `foot`, `cycling`
 - Free public instance (please use responsibly)
+- Used for all vehicle types by default
+- Includes route alternatives and safety optimization for hikers/cyclists
+
+### OpenRouteService (Optional)
+- Endpoint: `https://api.openrouteservice.org/v2/directions/{profile}`
+- Profiles: `driving-car`, `foot-walking`, `cycling-regular`
+- Requires free API key (2000 requests/day)
+- Registration: https://openrouteservice.org/dev/#/signup
+- Automatically used for hiker/cyclist routes when API key is provided
+- Native road exclusion: Excludes highways and tollways at routing level
+- Falls back to OSRM if API key not provided or request fails
 
 ### Nominatim Geocoding
 - Endpoint: `https://nominatim.openstreetmap.org/search`
@@ -258,6 +297,7 @@ Contributions are welcome! Please ensure:
 ## Credits
 
 - **OSRM** - Open Source Routing Machine
+- **OpenRouteService** - Alternative routing service with road exclusions
 - **OpenStreetMap** - Map data and tiles
 - **Nominatim** - Geocoding service
 - **Overpass API** - POI data queries
