@@ -1753,12 +1753,21 @@
         // Find parking spots for trucks/cars
         async function findParkingSpots(lat, lon, radius = 5000) {
             try {
+                // Query for rest areas and intersection nodes
+                // Rest areas: highway=rest_area or amenity=rest_area
+                // Intersections: nodes that are part of multiple highway ways
                 const query = `
                     [out:json][timeout:25];
                     (
-                      way["highway"~"^(unclassified|service|track|rest_area|tertiary)$"](around:${radius},${lat},${lon});
-                      node["highway"~"^(unclassified|service|track|rest_area|tertiary)$"](around:${radius},${lat},${lon});
+                      // Rest areas
+                      way["highway"="rest_area"](around:${radius},${lat},${lon});
+                      node["highway"="rest_area"](around:${radius},${lat},${lon});
+                      node["amenity"="rest_area"](around:${radius},${lat},${lon});
+                      
+                      // Get all highway ways in area to find intersections
+                      way["highway"](around:${radius},${lat},${lon});
                     );
+                    (._;>;);
                     out center;
                 `;
 
@@ -1769,32 +1778,87 @@
 
                 const data = await response.json();
                 const spots = [];
+                const nodeWayCount = new Map(); // Track how many ways each node belongs to
+                const restAreaNodes = new Set(); // Track rest area nodes
+                const restAreaWays = []; // Track rest area ways
+                const nodeCoords = new Map(); // Store node coordinates
 
+                // First pass: collect all data
                 for (const element of data.elements || []) {
-                    let spotLat, spotLon;
-                    if (element.type === 'way' && element.center) {
-                        spotLat = element.center.lat;
-                        spotLon = element.center.lon;
-                    } else if (element.type === 'node') {
-                        spotLat = element.lat;
-                        spotLon = element.lon;
-                    } else {
-                        continue;
+                    if (element.type === 'node') {
+                        // Store coordinates
+                        if (element.lat && element.lon) {
+                            nodeCoords.set(element.id, { lat: element.lat, lon: element.lon });
+                        }
+                        
+                        // Check if it's a rest area
+                        if (element.tags?.highway === 'rest_area' || element.tags?.amenity === 'rest_area') {
+                            restAreaNodes.add(element.id);
+                            spots.push({
+                                lat: element.lat,
+                                lon: element.lon,
+                                type: 'rest_area',
+                                name: element.tags?.name || 'Rest Area'
+                            });
+                        }
+                    } else if (element.type === 'way') {
+                        // Check if it's a rest area way
+                        if (element.tags?.highway === 'rest_area') {
+                            restAreaWays.push(element);
+                        }
+                        
+                        // Count nodes in this way for intersection detection
+                        if (element.nodes && Array.isArray(element.nodes)) {
+                            for (const nodeId of element.nodes) {
+                                nodeWayCount.set(nodeId, (nodeWayCount.get(nodeId) || 0) + 1);
+                            }
+                        }
                     }
+                }
 
-                    // Check for buildings/structures within 150m
-                    const hasBuildings = await checkForBuildings(spotLat, spotLon);
-                    if (!hasBuildings) {
+                // Add rest area way centers
+                for (const way of restAreaWays) {
+                    if (way.center) {
                         spots.push({
-                            lat: spotLat,
-                            lon: spotLon,
-                            highway: element.tags?.highway || 'unknown',
-                            name: element.tags?.name || 'Unnamed road'
+                            lat: way.center.lat,
+                            lon: way.center.lon,
+                            type: 'rest_area',
+                            name: way.tags?.name || 'Rest Area'
                         });
                     }
                 }
 
-                return spots;
+                // Find intersection nodes (nodes that belong to 2+ ways)
+                for (const [nodeId, count] of nodeWayCount.entries()) {
+                    if (count >= 2 && !restAreaNodes.has(nodeId)) {
+                        const coords = nodeCoords.get(nodeId);
+                        if (coords) {
+                            spots.push({
+                                lat: coords.lat,
+                                lon: coords.lon,
+                                type: 'intersection',
+                                name: `Intersection (${count} roads)`
+                            });
+                        }
+                    }
+                }
+
+                // Filter out spots with buildings within 150m (only for intersections, rest areas are always valid)
+                const filteredSpots = [];
+                for (const spot of spots) {
+                    if (spot.type === 'rest_area') {
+                        // Rest areas are always valid
+                        filteredSpots.push(spot);
+                    } else if (spot.type === 'intersection') {
+                        // Check intersections for nearby buildings
+                        const hasBuildings = await checkForBuildings(spot.lat, spot.lon);
+                        if (!hasBuildings) {
+                            filteredSpots.push(spot);
+                        }
+                    }
+                }
+
+                return filteredSpots;
             } catch (error) {
                 console.error('Parking spot search failed:', error);
                 return [];
