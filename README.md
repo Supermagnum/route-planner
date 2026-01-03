@@ -6,16 +6,18 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 
 ### Truck Support
 - EU Regulation EC 561/2006 compliance
-- 45-minute breaks every 4.5 hours
-- 11-hour daily rest every 9 hours
+- 45-minute breaks every 4.5 hours (±20 minutes tolerance)
+- 11-hour daily rest every 9 hours (±20 minutes tolerance)
 - 45-hour weekly rest every 6 days
+- **Optimized calculation**: Uses route distance/time directly instead of iterating all coordinate points
 - Axle load restriction checking
 - Weight limit verification
 - Road restriction warnings
 
 ### Car Support
 - EU rest regulations (suggested)
-- Same rest periods as trucks
+- Same rest periods as trucks (with ±20 minutes tolerance)
+- **Optimized calculation**: Uses route distance/time directly instead of iterating all coordinate points
 - No axle load restrictions
 - Parking spot suggestions
 
@@ -79,13 +81,16 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 - Helps plan safer routes by identifying and avoiding problematic segments
 
 ### Parking & Camping
-- Suitable parking spots for trucks/cars
+- **Parking spots for trucks/cars**: Only at intersections and rest areas
+  - Rest areas (highway=rest_area or amenity=rest_area)
+  - Intersections (nodes where 2+ highway ways meet)
+  - Building proximity filtering (150m minimum for intersections)
+- **Country border respect**: If route stays within one country (start, end, and via points in same country), parking spots and rest locations are filtered to only show locations within that country to avoid customs issues
 - Nordic wild camping rules by country:
   - **Norway**: 2 nights max, 150m from houses
   - **Sweden**: 1-2 nights, out of sight from houses
   - **Denmark**: WARNING - Designated sites only
   - **Finland**: Short periods, keep distance from homes
-- Building proximity filtering (150m minimum)
 
 ## Technology Stack
 
@@ -172,9 +177,14 @@ The application implements rate limiting for Nominatim requests:
 
 ### Truck/Car Routes
 - Uses OSRM `driving` profile
-- Calculates rest stops based on driving time
+- **Optimized rest stop calculation**: 
+  - Uses route distance/time directly (no iteration through all coordinate points)
+  - Calculates rest stops based on cumulative distance/time thresholds
+  - ±20 minutes tolerance for breaks and daily rest
+  - Significant performance improvement for long routes
 - Checks axle load restrictions along route
-- Finds parking spots for overnight rests
+- Finds parking spots for overnight rests (intersections and rest areas only)
+- **Country border filtering**: If route stays within one country, all parking spots and rest locations are filtered to that country
 
 ### Hiker Routes
 - **Routing**: 
@@ -186,6 +196,7 @@ The application implements rate limiting for Nominatim requests:
 - Water points and shelters along route
 - **Water point filtering**: Minimum 4 km between water points
 - **Hut filtering**: Minimum 1300 m between huts/shelters
+- **Country border respect**: If route stays within one country, water points and shelters are filtered to that country
 - Hut search: alpine huts, wilderness huts, unlocked basic huts
 - Road safety validation - automatically selects safest route from alternatives
 - Allowed roads: footway, path, track, steps, bridleway, or roads with hiking/foot designations
@@ -200,6 +211,7 @@ The application implements rate limiting for Nominatim requests:
 - Water points along route
 - **Water point filtering**: Minimum 4 km between water points
 - **Hut filtering**: Minimum 1300 m between huts/shelters
+- **Country border respect**: If route stays within one country, water points and shelters are filtered to that country
 - Hut search near daily stops and segment breaks
 - Road safety validation - automatically selects safest route from alternatives
 - Allowed roads: cycleway, path, track, secondary, tertiary, unclassified, residential, living_street
@@ -235,6 +247,8 @@ The application implements rate limiting for Nominatim requests:
 - **Multiple via points**: Supports unlimited via points in route calculation
 - **Calculation cancellation**: Automatically cancels old calculations when inputs change
 - **Route optimization**: For hikers/cyclists, automatically finds safest routes avoiding unsafe roads
+- **Optimized rest stop calculation**: For trucks/cars, uses route distance/time directly instead of iterating all coordinate points (significant performance improvement)
+- **Country border respect**: Automatically detects if route stays within one country and filters rest stops, parking spots, water points, and shelters to that country to avoid customs issues
 - **Error handling**: Graceful error handling with user-friendly messages
 
 ### State Management

@@ -694,6 +694,11 @@
         document.getElementById('calculateBtn').addEventListener('click', calculateRoute);
         document.getElementById('exportGpxBtn').addEventListener('click', exportToGPX);
         
+        // Cancel calculation when inputs change
+        document.getElementById('startAddress').addEventListener('input', cancelCalculation);
+        document.getElementById('destinationAddress').addEventListener('input', cancelCalculation);
+        document.getElementById('departureTime').addEventListener('change', cancelCalculation);
+        
         // Initialize truck fields visibility on page load
         handleVehicleTypeChange();
         document.getElementById('orsApiKey').addEventListener('input', function() {
@@ -925,6 +930,8 @@
                     
                     // Update via points list
                     updateViaPointsList();
+                    // Cancel ongoing calculation when via points are added
+                    cancelCalculation();
                 }
                 
             } catch (error) {
@@ -948,6 +955,8 @@
                     viaMarker.bindPopup(`<strong>Via Point</strong><br>${coords}`);
                     viaMarkers.push(viaMarker);
                     updateViaPointsList();
+                    // Cancel ongoing calculation when via points are added
+                    cancelCalculation();
                 }
             } finally {
                 loadingDiv.style.display = 'none';
@@ -977,6 +986,8 @@
                 // Remove point
                 viaPoints.splice(index, 1);
                 updateViaPointsList();
+                // Cancel ongoing calculation when via points change
+                cancelCalculation();
             }
         }
         
@@ -1025,10 +1036,29 @@
             }
         }
 
-        // Reverse geocode to get country
-        async function getCountry(lat, lon) {
+        // Country cache to avoid redundant API calls for nearby coordinates
+        const countryCache = new Map();
+        const CACHE_RADIUS = 0.01; // ~1km radius for cache hits
+
+        // Helper function to generate cache key from coordinates (rounded to cache radius)
+        function getCacheKey(lat, lon) {
+            const roundedLat = Math.round(lat / CACHE_RADIUS) * CACHE_RADIUS;
+            const roundedLon = Math.round(lon / CACHE_RADIUS) * CACHE_RADIUS;
+            return `${roundedLat.toFixed(4)},${roundedLon.toFixed(4)}`;
+        }
+
+        // Reverse geocode to get country (with caching)
+        async function getCountry(lat, lon, skipDelay = false) {
+            // Check cache first
+            const cacheKey = getCacheKey(lat, lon);
+            if (countryCache.has(cacheKey)) {
+                return countryCache.get(cacheKey);
+            }
+
             try {
-                await delay(1000); // Rate limiting
+                if (!skipDelay) {
+                    await delay(1000); // Rate limiting (only when not batching)
+                }
                 const response = await fetch(
                     `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`,
                     {
@@ -1038,7 +1068,11 @@
                     }
                 );
                 const data = await response.json();
-                return data.address?.country || 'Unknown';
+                const country = data.address?.country || 'Unknown';
+                
+                // Cache the result
+                countryCache.set(cacheKey, country);
+                return country;
             } catch (error) {
                 console.error('Reverse geocoding failed:', error);
                 return 'Unknown';
@@ -1321,7 +1355,7 @@
         }
 
         // Find drinking water points along route
-        async function findDrinkingWater(lat, lon, radius = 2000) {
+        async function findDrinkingWater(lat, lon, radius = 2000, countryFilter = null) {
             try {
                 const query = `
                     [out:json][timeout:25];
@@ -1355,6 +1389,18 @@
                         type: isSpring ? 'spring' : 'water',
                         note: isSpring ? 'Drink it at your own risk' : null
                     });
+                }
+
+                // Filter by country if countryFilter is provided (use cache, skip delays when batching)
+                if (countryFilter) {
+                    const filteredWaterPoints = [];
+                    for (const water of waterPoints) {
+                        const waterCountry = await getCountry(water.lat, water.lon, true); // Skip delay when batching
+                        if (waterCountry === countryFilter) {
+                            filteredWaterPoints.push(water);
+                        }
+                    }
+                    return filteredWaterPoints;
                 }
 
                 return waterPoints;
@@ -1751,7 +1797,7 @@
         }
 
         // Find parking spots for trucks/cars
-        async function findParkingSpots(lat, lon, radius = 5000) {
+        async function findParkingSpots(lat, lon, radius = 3000, countryFilter = null) {
             try {
                 // Query for rest areas and intersection nodes
                 // Rest areas: highway=rest_area or amenity=rest_area
@@ -1843,20 +1889,49 @@
                     }
                 }
 
+                // Separate rest areas and intersections
+                const restAreas = spots.filter(s => s.type === 'rest_area');
+                const intersections = spots.filter(s => s.type === 'intersection');
+
+                // Limit intersections to top 5 for building checks (optimization)
+                const topIntersections = intersections.slice(0, 5);
+
                 // Filter out spots with buildings within 150m (only for intersections, rest areas are always valid)
+                // Also filter by country if countryFilter is provided
                 const filteredSpots = [];
-                for (const spot of spots) {
-                    if (spot.type === 'rest_area') {
-                        // Rest areas are always valid
-                        filteredSpots.push(spot);
-                    } else if (spot.type === 'intersection') {
-                        // Check intersections for nearby buildings
-                        const hasBuildings = await checkForBuildings(spot.lat, spot.lon);
-                        if (!hasBuildings) {
-                            filteredSpots.push(spot);
+                
+                // Process rest areas first (always valid, but check country)
+                for (const spot of restAreas) {
+                    if (countryFilter) {
+                        const spotCountry = await getCountry(spot.lat, spot.lon, true); // Skip delay when batching
+                        if (spotCountry !== countryFilter) {
+                            continue;
                         }
                     }
+                    filteredSpots.push(spot);
                 }
+
+                // Process top intersections with building checks (limit to 5 for performance)
+                const intersectionChecks = topIntersections.map(async (spot) => {
+                    // Check country if filter is provided
+                    if (countryFilter) {
+                        const spotCountry = await getCountry(spot.lat, spot.lon, true); // Skip delay when batching
+                        if (spotCountry !== countryFilter) {
+                            return null;
+                        }
+                    }
+                    
+                    // Check for nearby buildings
+                    const hasBuildings = await checkForBuildings(spot.lat, spot.lon);
+                    if (!hasBuildings) {
+                        return spot;
+                    }
+                    return null;
+                });
+
+                // Wait for all building checks in parallel
+                const validIntersections = (await Promise.all(intersectionChecks)).filter(s => s !== null);
+                filteredSpots.push(...validIntersections);
 
                 return filteredSpots;
             } catch (error) {
@@ -1866,7 +1941,7 @@
         }
 
         // Find rest spots for hikers and cyclists (huts and shelters)
-        async function findHikerRestSpots(lat, lon, radius = 5000) {
+        async function findHikerRestSpots(lat, lon, radius = 5000, countryFilter = null) {
             try {
                 const query = `
                     [out:json][timeout:25];
@@ -1921,6 +1996,18 @@
                     });
                 }
 
+                // Filter by country if countryFilter is provided (use cache, skip delays when batching)
+                if (countryFilter) {
+                    const filteredSpots = [];
+                    for (const spot of spots) {
+                        const spotCountry = await getCountry(spot.lat, spot.lon, true); // Skip delay when batching
+                        if (spotCountry === countryFilter) {
+                            filteredSpots.push(spot);
+                        }
+                    }
+                    return filteredSpots;
+                }
+
                 return spots;
             } catch (error) {
                 console.error('Hiker rest spot search failed:', error);
@@ -1928,8 +2015,25 @@
             }
         }
 
-        // Check for buildings/structures within 150m
+        // Building check cache to avoid redundant API calls
+        const buildingCheckCache = new Map();
+        const BUILDING_CACHE_RADIUS = 0.001; // ~100m radius for cache hits
+
+        // Helper function to generate cache key for building checks
+        function getBuildingCacheKey(lat, lon) {
+            const roundedLat = Math.round(lat / BUILDING_CACHE_RADIUS) * BUILDING_CACHE_RADIUS;
+            const roundedLon = Math.round(lon / BUILDING_CACHE_RADIUS) * BUILDING_CACHE_RADIUS;
+            return `${roundedLat.toFixed(5)},${roundedLon.toFixed(5)}`;
+        }
+
+        // Check for buildings/structures within 150m (with caching)
         async function checkForBuildings(lat, lon) {
+            // Check cache first
+            const cacheKey = getBuildingCacheKey(lat, lon);
+            if (buildingCheckCache.has(cacheKey)) {
+                return buildingCheckCache.get(cacheKey);
+            }
+
             try {
                 const query = `
                     [out:json][timeout:25];
@@ -1946,7 +2050,11 @@
                 });
 
                 const data = await response.json();
-                return (data.elements?.length || 0) > 0;
+                const hasBuildings = (data.elements?.length || 0) > 0;
+                
+                // Cache the result
+                buildingCheckCache.set(cacheKey, hasBuildings);
+                return hasBuildings;
             } catch (error) {
                 console.error('Building check failed:', error);
                 return false;
@@ -1964,162 +2072,293 @@
 
             if (vehicleType === 'hiker') {
                 // Hiker: 40 km per day suggested maximum
+                // Optimized: Use route distance directly and sample coordinates
+                const totalDistance = route.routes[0].distance; // meters
+                const sampleInterval = Math.max(1, Math.floor(coordinates.length / Math.max(100, Math.floor(totalDistance / 1000)))); // Sample every Nth point based on route length
+                
                 let accumulatedDistance = 0; // meters
                 let dayCount = 0;
                 let restCount = 0;
                 let altRestCount = 0;
+                let lastProcessedIndex = 0;
 
-                for (let i = 0; i < coordinates.length - 1; i++) {
+                // Helper to find coordinate at specific distance
+                function findCoordinateAtDistance(targetDist) {
+                    let accDist = 0;
+                    for (let i = 0; i < coordinates.length - 1; i++) {
+                        const [lon1, lat1] = coordinates[i];
+                        const [lon2, lat2] = coordinates[i + 1];
+                        const segDist = haversineDistance(lat1, lon1, lat2, lon2) * 1000;
+                        
+                        if (accDist + segDist >= targetDist) {
+                            const ratio = (targetDist - accDist) / segDist;
+                            return {
+                                lat: lat1 + (lat2 - lat1) * ratio,
+                                lon: lon1 + (lon2 - lon1) * ratio,
+                                distance: targetDist / 1000,
+                                index: i
+                            };
+                        }
+                        accDist += segDist;
+                    }
+                    const last = coordinates[coordinates.length - 1];
+                    return {
+                        lat: last[1],
+                        lon: last[0],
+                        distance: totalDistance / 1000,
+                        index: coordinates.length - 1
+                    };
+                }
+
+                // Sample coordinates instead of checking every pair
+                for (let i = 0; i < coordinates.length - 1; i += sampleInterval) {
                     const [lon1, lat1] = coordinates[i];
-                    const [lon2, lat2] = coordinates[i + 1];
-                    const segmentDistance = haversineDistance(lat1, lon1, lat2, lon2) * 1000; // meters
+                    const [lon2, lat2] = coordinates[Math.min(i + sampleInterval, coordinates.length - 1)];
+                    const segmentDistance = haversineDistance(lat1, lon1, lat2, lon2) * 1000;
                     accumulatedDistance += segmentDistance;
 
                     // Daily segment: 40 km per day
                     if (accumulatedDistance >= (dayCount + 1) * 40000) {
                         dayCount++;
+                        const coord = findCoordinateAtDistance((dayCount) * 40000);
                         restStops.push({
                             type: 'daily-segment',
-                            lat: lat2,
-                            lon: lon2,
-                            distance: accumulatedDistance / 1000, // km
+                            lat: coord.lat,
+                            lon: coord.lon,
+                            distance: coord.distance,
                             day: dayCount,
-                            index: i + 1
+                            index: coord.index
                         });
                     }
 
                     // Check for main rest (11.295 km)
                     if (accumulatedDistance >= (restCount + 1) * 11295) {
                         restCount++;
+                        const coord = findCoordinateAtDistance((restCount) * 11295);
                         restStops.push({
                             type: 'hiker-rest',
-                            lat: lat2,
-                            lon: lon2,
-                            distance: accumulatedDistance / 1000, // km
-                            index: i + 1
+                            lat: coord.lat,
+                            lon: coord.lon,
+                            distance: coord.distance,
+                            index: coord.index
                         });
                     }
 
                     // Check for alternative rest (2.2752 km)
                     if (accumulatedDistance >= (altRestCount + 1) * 2275.2) {
                         altRestCount++;
+                        const coord = findCoordinateAtDistance((altRestCount) * 2275.2);
                         // Only add if not too close to main rest
                         const lastMainRest = restStops.filter(s => s.type === 'hiker-rest').pop();
-                        if (!lastMainRest || (accumulatedDistance - lastMainRest.distance * 1000) > 1000) {
+                        if (!lastMainRest || (coord.distance * 1000 - lastMainRest.distance * 1000) > 1000) {
                             restStops.push({
                                 type: 'hiker-rest-alt',
-                                lat: lat2,
-                                lon: lon2,
-                                distance: accumulatedDistance / 1000, // km
-                                index: i + 1
+                                lat: coord.lat,
+                                lon: coord.lon,
+                                distance: coord.distance,
+                                index: coord.index
                             });
                         }
                     }
                 }
             } else if (vehicleType === 'bike') {
                 // Cycling: 70 km per day, 4 segments of 17 km each
+                // Optimized: Use route distance directly and sample coordinates
+                const totalDistance = route.routes[0].distance; // meters
+                const sampleInterval = Math.max(1, Math.floor(coordinates.length / Math.max(100, Math.floor(totalDistance / 1000)))); // Sample every Nth point
+                
                 let accumulatedDistance = 0; // meters
                 let dayCount = 0;
                 let segmentCount = 0;
 
-                for (let i = 0; i < coordinates.length - 1; i++) {
+                // Helper to find coordinate at specific distance
+                function findCoordinateAtDistance(targetDist) {
+                    let accDist = 0;
+                    for (let i = 0; i < coordinates.length - 1; i++) {
+                        const [lon1, lat1] = coordinates[i];
+                        const [lon2, lat2] = coordinates[i + 1];
+                        const segDist = haversineDistance(lat1, lon1, lat2, lon2) * 1000;
+                        
+                        if (accDist + segDist >= targetDist) {
+                            const ratio = (targetDist - accDist) / segDist;
+                            return {
+                                lat: lat1 + (lat2 - lat1) * ratio,
+                                lon: lon1 + (lon2 - lon1) * ratio,
+                                distance: targetDist / 1000,
+                                index: i
+                            };
+                        }
+                        accDist += segDist;
+                    }
+                    const last = coordinates[coordinates.length - 1];
+                    return {
+                        lat: last[1],
+                        lon: last[0],
+                        distance: totalDistance / 1000,
+                        index: coordinates.length - 1
+                    };
+                }
+
+                // Sample coordinates instead of checking every pair
+                for (let i = 0; i < coordinates.length - 1; i += sampleInterval) {
                     const [lon1, lat1] = coordinates[i];
-                    const [lon2, lat2] = coordinates[i + 1];
-                    const segmentDistance = haversineDistance(lat1, lon1, lat2, lon2) * 1000; // meters
+                    const [lon2, lat2] = coordinates[Math.min(i + sampleInterval, coordinates.length - 1)];
+                    const segmentDistance = haversineDistance(lat1, lon1, lat2, lon2) * 1000;
                     accumulatedDistance += segmentDistance;
 
                     // Daily segment: 70 km per day
                     if (accumulatedDistance >= (dayCount + 1) * 70000) {
                         dayCount++;
+                        const coord = findCoordinateAtDistance((dayCount) * 70000);
                         restStops.push({
                             type: 'daily-segment',
-                            lat: lat2,
-                            lon: lon2,
-                            distance: accumulatedDistance / 1000, // km
+                            lat: coord.lat,
+                            lon: coord.lon,
+                            distance: coord.distance,
                             day: dayCount,
-                            index: i + 1
+                            index: coord.index
                         });
                     }
 
                     // Segment breaks: 17 km per segment (4 segments per day)
                     if (accumulatedDistance >= (segmentCount + 1) * 17000) {
                         segmentCount++;
+                        const coord = findCoordinateAtDistance((segmentCount) * 17000);
                         restStops.push({
                             type: 'segment-break',
-                            lat: lat2,
-                            lon: lon2,
-                            distance: accumulatedDistance / 1000, // km
+                            lat: coord.lat,
+                            lon: coord.lon,
+                            distance: coord.distance,
                             segment: segmentCount,
-                            index: i + 1
+                            index: coord.index
                         });
                     }
                 }
             } else {
                 // Truck/Car rest rules (EU Regulation EC 561/2006)
-                const avgSpeed = 80; // km/h
-                let totalDrivingTime = 0; // hours
-                let daysDriving = 0;
-                let accumulatedDistance = 0;
-                let breakCount = 0;
-                let dailyRestCount = 0;
-                let weeklyRestCount = 0;
+                // Use route distance/time directly instead of iterating all points
+                const totalDistance = route.routes[0].distance / 1000; // km
+                const totalDuration = route.routes[0].duration / 3600; // hours
+                const avgSpeed = totalDistance / totalDuration; // km/h (actual route speed)
 
                 const breakInterval = 4.5; // hours
+                const breakTolerance = 20 / 60; // 20 minutes tolerance (±0.33 hours)
                 const dailyRestInterval = 9; // hours
+                const dailyRestTolerance = 20 / 60; // 20 minutes tolerance (±0.33 hours)
                 const weeklyRestDays = 6;
 
-                for (let i = 0; i < coordinates.length - 1; i++) {
-                    const [lon1, lat1] = coordinates[i];
-                    const [lon2, lat2] = coordinates[i + 1];
-                    const segmentDistance = haversineDistance(lat1, lon1, lat2, lon2);
-                    accumulatedDistance += segmentDistance;
-                    const segmentTime = segmentDistance / avgSpeed; // hours
-                    totalDrivingTime += segmentTime;
+                let breakCount = 0;
+                let dailyRestCount = 0;
+                let daysDriving = 0;
+                let weeklyRestCount = 0;
 
-                    // Check for break (every 4.5 hours)
-                    if (totalDrivingTime >= (breakCount + 1) * breakInterval) {
-                        breakCount++;
-                        restStops.push({
-                            type: 'break',
-                            lat: lat2,
-                            lon: lon2,
-                            distance: accumulatedDistance,
-                            time: new Date(currentTime.getTime() + totalDrivingTime * 3600000),
-                            duration: 45, // minutes
-                            index: i + 1
-                        });
+                // Helper function to find coordinate at specific distance along route
+                function findCoordinateAtDistance(targetDistance) {
+                    let accumulatedDist = 0;
+                    for (let i = 0; i < coordinates.length - 1; i++) {
+                        const [lon1, lat1] = coordinates[i];
+                        const [lon2, lat2] = coordinates[i + 1];
+                        const segmentDist = haversineDistance(lat1, lon1, lat2, lon2);
+                        
+                        if (accumulatedDist + segmentDist >= targetDistance) {
+                            // Interpolate between points
+                            const ratio = (targetDistance - accumulatedDist) / segmentDist;
+                            return {
+                                lat: lat1 + (lat2 - lat1) * ratio,
+                                lon: lon1 + (lon2 - lon1) * ratio,
+                                distance: targetDistance,
+                                index: i
+                            };
+                        }
+                        accumulatedDist += segmentDist;
                     }
+                    // If target distance exceeds route, return last point
+                    const last = coordinates[coordinates.length - 1];
+                    return {
+                        lat: last[1],
+                        lon: last[0],
+                        distance: totalDistance,
+                        index: coordinates.length - 1
+                    };
+                }
 
-                    // Check for daily rest (every 9 hours)
-                    if (totalDrivingTime >= (dailyRestCount + 1) * dailyRestInterval) {
-                        dailyRestCount++;
-                        daysDriving++;
-                        restStops.push({
-                            type: 'daily',
-                            lat: lat2,
-                            lon: lon2,
-                            distance: accumulatedDistance,
-                            time: new Date(currentTime.getTime() + totalDrivingTime * 3600000),
-                            duration: 11, // hours
-                            index: i + 1
-                        });
+                // Calculate breaks (every 4.5 hours with ±20 min tolerance)
+                // Tolerance allows breaks to be taken 20 minutes before or after the 4.5h mark
+                let nextBreakTime = breakInterval;
+                while (nextBreakTime - breakTolerance <= totalDuration) {
+                    // Calculate break time (can be within tolerance window)
+                    // Use the exact interval time, tolerance is regulatory allowance
+                    const breakTime = Math.min(nextBreakTime, totalDuration);
+                    const breakDistance = (breakTime / totalDuration) * totalDistance;
+                    const coord = findCoordinateAtDistance(breakDistance);
+                    
+                    restStops.push({
+                        type: 'break',
+                        lat: coord.lat,
+                        lon: coord.lon,
+                        distance: coord.distance,
+                        time: new Date(currentTime.getTime() + breakTime * 3600000),
+                        duration: 45, // minutes
+                        index: coord.index,
+                        tolerance: '±20 minutes'
+                    });
+                    
+                    breakCount++;
+                    // Next break: add interval
+                    // If next break would overlap with daily rest, skip to daily rest instead
+                    const nextBreakCandidate = nextBreakTime + breakInterval;
+                    const nextDailyRestTime = (dailyRestCount + 1) * dailyRestInterval;
+                    if (nextBreakCandidate >= nextDailyRestTime - dailyRestTolerance) {
+                        // Skip break if daily rest is coming soon (within tolerance)
+                        nextBreakTime = nextDailyRestTime;
+                    } else {
+                        nextBreakTime = nextBreakCandidate;
                     }
+                }
 
+                // Calculate daily rest (every 9 hours with ±20 min tolerance)
+                // Tolerance allows daily rest to be taken 20 minutes before or after the 9h mark
+                let nextDailyRestTime = dailyRestInterval;
+                while (nextDailyRestTime - dailyRestTolerance <= totalDuration) {
+                    // Calculate daily rest time (can be within tolerance window)
+                    const dailyRestTime = Math.min(nextDailyRestTime, totalDuration);
+                    const dailyRestDistance = (dailyRestTime / totalDuration) * totalDistance;
+                    const coord = findCoordinateAtDistance(dailyRestDistance);
+                    
+                    daysDriving++;
+                    restStops.push({
+                        type: 'daily',
+                        lat: coord.lat,
+                        lon: coord.lon,
+                        distance: coord.distance,
+                        time: new Date(currentTime.getTime() + dailyRestTime * 3600000),
+                        duration: 11, // hours
+                        index: coord.index,
+                        tolerance: '±20 minutes'
+                    });
+                    
+                    dailyRestCount++;
+                    
                     // Check for weekly rest (every 6 days)
                     if (daysDriving >= weeklyRestDays && weeklyRestCount === 0) {
                         weeklyRestCount++;
                         restStops.push({
                             type: 'weekly',
-                            lat: lat2,
-                            lon: lon2,
-                            distance: accumulatedDistance,
-                            time: new Date(currentTime.getTime() + totalDrivingTime * 3600000),
+                            lat: coord.lat,
+                            lon: coord.lon,
+                            distance: coord.distance,
+                            time: new Date(currentTime.getTime() + dailyRestTime * 3600000),
                             duration: 45, // hours
-                            index: i + 1
+                            index: coord.index
                         });
                         daysDriving = 0;
                     }
+                    
+                    nextDailyRestTime += dailyRestInterval;
                 }
+
+                // Sort rest stops by distance to maintain order
+                restStops.sort((a, b) => a.distance - b.distance);
             }
 
             return restStops;
@@ -2442,12 +2681,26 @@
             section.style.display = 'block';
         }
 
+        // Cancel ongoing calculation and reset UI
+        function cancelCalculation() {
+            if (isCalculating) {
+                console.log('Cancelling ongoing calculation...');
+                calculationId++; // Increment to invalidate ongoing calculation
+                isCalculating = false;
+                const calculateBtn = document.getElementById('calculateBtn');
+                const loadingDiv = document.getElementById('loading');
+                calculateBtn.disabled = false;
+                // Don't hide loading div - let new calculation handle it
+            }
+        }
+
         // Main route calculation function
         async function calculateRoute() {
             // If already calculating, cancel the previous calculation
             if (isCalculating) {
                 console.log('Cancelling previous calculation and starting new one...');
                 calculationId++; // Increment to invalidate previous calculation
+                isCalculating = false; // Reset flag immediately so button can be clicked again
             }
             
             const startAddress = document.getElementById('startAddress').value.trim();
@@ -2493,7 +2746,7 @@
                     return;
                 }
                 
-                await delay(1000);
+                await delay(1000); // Rate limiting for Nominatim
 
                 loadingText.textContent = 'Geocoding destination address...';
                 const destCoords = await geocodeAddress(destAddress);
@@ -2501,6 +2754,32 @@
                 // Check if calculation was cancelled
                 if (currentCalculationId !== calculationId) {
                     console.log('Calculation cancelled during geocoding');
+                    return;
+                }
+
+                // Check countries for start, end, and via points to determine route country
+                // Batch country lookups with delays only between Nominatim calls
+                loadingText.textContent = 'Checking route countries...';
+                const startCountry = await getCountry(startCoords.lat, startCoords.lon);
+                await delay(1000); // Rate limiting for Nominatim
+                const destCountry = await getCountry(destCoords.lat, destCoords.lon);
+                
+                // Check via points countries (with rate limiting)
+                const viaCountries = [];
+                for (let i = 0; i < viaPoints.length; i++) {
+                    await delay(1000); // Rate limiting for Nominatim
+                    const viaCountry = await getCountry(viaPoints[i].lat, viaPoints[i].lon);
+                    viaCountries.push(viaCountry);
+                }
+                
+                // Determine if route stays within one country
+                const allCountries = [startCountry, destCountry, ...viaCountries];
+                const uniqueCountries = [...new Set(allCountries.filter(c => c !== 'Unknown'))];
+                const routeCountry = uniqueCountries.length === 1 ? uniqueCountries[0] : null;
+                
+                // Check if calculation was cancelled
+                if (currentCalculationId !== calculationId) {
+                    console.log('Calculation cancelled during country check');
                     return;
                 }
 
@@ -2597,9 +2876,9 @@
                     const stop = restStops[i];
                     loadingText.textContent = `Processing rest stop ${i + 1} of ${restStops.length}...`;
 
-                    // Get country (for trucks/cars)
+                    // Get country (for trucks/cars) - use cache when possible
                     if (vehicleType !== 'hiker') {
-                        const country = await getCountry(stop.lat, stop.lon);
+                        const country = await getCountry(stop.lat, stop.lon, true); // Skip delay when processing multiple stops
                         countries.push(country);
                         stop.country = country;
                     }
@@ -2621,7 +2900,7 @@
                     // Find parking/rest spots and water points
                     if (vehicleType === 'hiker' || vehicleType === 'bike') {
                         // Find water points for hiking and cycling
-                        const waterPoints = await findDrinkingWater(stop.lat, stop.lon, 2000);
+                        const waterPoints = await findDrinkingWater(stop.lat, stop.lon, 2000, routeCountry);
                         // Filter to ensure minimum 4km distance between water points
                         const filteredWaterPoints = filterWaterPointsByDistance(waterPoints, 4);
                         filteredWaterPoints.forEach(water => {
@@ -2633,7 +2912,7 @@
 
                         // Find huts and shelters near daily segments and rest stops
                         if (stop.type === 'daily-segment' || stop.type === 'segment-break' || stop.type === 'hiker-rest' || stop.type === 'hiker-rest-alt') {
-                            const restSpots = await findHikerRestSpots(stop.lat, stop.lon, 3000);
+                            const restSpots = await findHikerRestSpots(stop.lat, stop.lon, 3000, routeCountry);
                             stop.restSpots = restSpots;
 
                             // Prioritize huts: alpine_hut, wilderness_hut, basic_hut, then other shelters
@@ -2685,7 +2964,7 @@
                     } else {
                         // Trucks/Cars: find parking spots for daily and weekly rests
                         if (stop.type === 'daily' || stop.type === 'weekly') {
-                            const parkingSpots = await findParkingSpots(stop.lat, stop.lon);
+                            const parkingSpots = await findParkingSpots(stop.lat, stop.lon, 3000, routeCountry);
                             stop.parkingSpots = parkingSpots;
 
                             parkingSpots.slice(0, 3).forEach(spot => {
@@ -2710,7 +2989,7 @@
                         addMarker(stop.lat, stop.lon, stop.type, popupContent);
                     }
 
-                    await delay(1000);
+                    // Removed unnecessary delay - rate limiting handled by individual API calls
                 }
 
                 // Water points and huts along the route (for hiking and cycling)
@@ -2726,7 +3005,7 @@
                         const [lat, lon] = samplePoints[i];
                         
                         // Find water points
-                        const waterPoints = await findDrinkingWater(lat, lon, 2000);
+                        const waterPoints = await findDrinkingWater(lat, lon, 2000, routeCountry);
                         // Filter to ensure minimum 4km distance between water points
                         const filteredWaterPoints = filterWaterPointsByDistance(waterPoints, 4);
                         filteredWaterPoints.forEach(water => {
@@ -2737,7 +3016,7 @@
                         });
                         
                         // Find huts and shelters
-                        const huts = await findHikerRestSpots(lat, lon, 3000);
+                        const huts = await findHikerRestSpots(lat, lon, 3000, routeCountry);
                         const priorityHuts = huts.filter(h => 
                             h.type === 'alpine_hut' || 
                             h.type === 'wilderness_hut' || 
