@@ -121,7 +121,7 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 
 ### Basic Usage
 
-1. Open `truck-route-planner.html` in a web browser
+1. Open `index.html` in a web browser
 2. Select vehicle type (Truck, Car, Hiker, or Cyclist)
 3. (Optional) Enter OpenRouteService API key for better road avoidance for hikers/cyclists
    - Get free key at https://openrouteservice.org/dev/#/signup
@@ -246,7 +246,7 @@ The application implements rate limiting for Nominatim requests:
 
 ```
 truck-router/
-├── truck-route-planner.html  # Single-file application
+├── index.html  # Single-file application
 └── README.md                 # This file
 ```
 
