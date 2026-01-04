@@ -1047,6 +1047,35 @@
             return `${roundedLat.toFixed(4)},${roundedLon.toFixed(4)}`;
         }
 
+        // Map country names to ISO3166-1 codes for Overpass area queries
+        const COUNTRY_ISO_CODES = {
+            'Norway': 'NO',
+            'Sweden': 'SE',
+            'Denmark': 'DK',
+            'Finland': 'FI',
+            'Iceland': 'IS',
+            'Germany': 'DE',
+            'France': 'FR',
+            'Spain': 'ES',
+            'Italy': 'IT',
+            'United Kingdom': 'GB',
+            'Poland': 'PL',
+            'Czech Republic': 'CZ',
+            'Austria': 'AT',
+            'Switzerland': 'CH',
+            'Netherlands': 'NL',
+            'Belgium': 'BE',
+            'Luxembourg': 'LU',
+            'Portugal': 'PT',
+            'Greece': 'GR',
+            'Ireland': 'IE'
+        };
+
+        // Get ISO3166-1 code from country name
+        function getCountryCode(countryName) {
+            return COUNTRY_ISO_CODES[countryName] || null;
+        }
+
         // Reverse geocode to get country (with caching)
         async function getCountry(lat, lon, skipDelay = false) {
             // Check cache first
@@ -1183,9 +1212,12 @@
                 waypoints += `;${destLon},${destLat}`;
                 
                 const alternativesParam = alternatives ? '&alternatives=true&number=3' : '';
-                const response = await fetch(
-                    `https://router.project-osrm.org/route/v1/${profile}/${waypoints}?overview=full&geometries=geojson${alternativesParam}`
-                );
+                // For foot profile, add steps=true to get more detailed route information
+                // This helps ensure waypoints are respected
+                const stepsParam = profile === 'foot' ? '&steps=true' : '';
+                const url = `https://router.project-osrm.org/route/v1/${profile}/${waypoints}?overview=full&geometries=geojson${alternativesParam}${stepsParam}`;
+                console.log(`OSRM Request: ${url.substring(0, 200)}... (${viaPoints.length} via points)`);
+                const response = await fetch(url);
                 const data = await response.json();
                 if (data.code !== 'Ok') {
                     throw new Error('Route calculation failed');
@@ -1237,6 +1269,32 @@
                     // Still check and try to improve
                     const warnings = await checkRouteSafety(fallbackRoute, vehicleType);
                     if (warnings.length > 0) {
+                        // For hikers: check for forbidden highways
+                        if (vehicleType === 'hiker') {
+                            const forbiddenHighways = ['motorway', 'trunk', 'primary', 'primary_link', 'motorway_link', 'trunk_link'];
+                            const hasForbiddenHighway = warnings.some(w => forbiddenHighways.includes(w.roadType));
+                            
+                            if (hasForbiddenHighway) {
+                                // Try to improve the route
+                                const improvedRoute = await tryAvoidUnsafeRoads(
+                                    startLat, startLon, destLat, destLon, viaPoints, 
+                                    fallbackRoute, vehicleType
+                                );
+                                if (improvedRoute && improvedRoute.routes) {
+                                    const improvedWarnings = await checkRouteSafety(improvedRoute, vehicleType);
+                                    const stillHasForbidden = improvedWarnings.some(w => forbiddenHighways.includes(w.roadType));
+                                    if (!stillHasForbidden) {
+                                        return improvedRoute;
+                                    }
+                                }
+                                // REJECT: Throw error
+                                const forbiddenTypes = warnings.filter(w => forbiddenHighways.includes(w.roadType)).map(w => w.roadType);
+                                const uniqueForbidden = [...new Set(forbiddenTypes)];
+                                throw new Error(`ROUTE_REJECTED: Route contains forbidden highways for hikers: ${uniqueForbidden.join(', ')}. Cannot find safe alternative. Please add via points to avoid these roads.`);
+                            }
+                        }
+                        
+                        // For other unsafe roads, try to improve
                         const improvedRoute = await tryAvoidUnsafeRoads(
                             startLat, startLon, destLat, destLon, viaPoints, 
                             fallbackRoute, vehicleType
@@ -1257,6 +1315,32 @@
                     if (vehicleType === 'hiker' || vehicleType === 'bike') {
                         const warnings = await checkRouteSafety(singleRoute, vehicleType);
                         if (warnings.length > 0) {
+                            // For hikers: check for forbidden highways
+                            if (vehicleType === 'hiker') {
+                                const forbiddenHighways = ['motorway', 'trunk', 'primary', 'primary_link', 'motorway_link', 'trunk_link'];
+                                const hasForbiddenHighway = warnings.some(w => forbiddenHighways.includes(w.roadType));
+                                
+                                if (hasForbiddenHighway) {
+                                    // Try to improve the route
+                                    const improvedRoute = await tryAvoidUnsafeRoads(
+                                        startLat, startLon, destLat, destLon, viaPoints, 
+                                        singleRoute, vehicleType
+                                    );
+                                    if (improvedRoute && improvedRoute.routes) {
+                                        const improvedWarnings = await checkRouteSafety(improvedRoute, vehicleType);
+                                        const stillHasForbidden = improvedWarnings.some(w => forbiddenHighways.includes(w.roadType));
+                                        if (!stillHasForbidden) {
+                                            return improvedRoute;
+                                        }
+                                    }
+                                    // REJECT: Throw error
+                                    const forbiddenTypes = warnings.filter(w => forbiddenHighways.includes(w.roadType)).map(w => w.roadType);
+                                    const uniqueForbidden = [...new Set(forbiddenTypes)];
+                                    throw new Error(`ROUTE_REJECTED: Route contains forbidden highways for hikers: ${uniqueForbidden.join(', ')}. Cannot find safe alternative. Please add via points to avoid these roads.`);
+                                }
+                            }
+                            
+                            // For other unsafe roads, try to improve
                             const improvedRoute = await tryAvoidUnsafeRoads(
                                 startLat, startLon, destLat, destLon, viaPoints, 
                                 singleRoute, vehicleType
@@ -1314,6 +1398,49 @@
                     }
                 }
                 
+                // For hikers: Reject routes with forbidden highways (trunk, motorway, primary)
+                // These are absolutely not allowed and we must find an alternative
+                if (vehicleType === 'hiker' && bestRoute.unsafeCount > 0) {
+                    const forbiddenHighways = ['motorway', 'trunk', 'primary', 'primary_link', 'motorway_link', 'trunk_link'];
+                    const hasForbiddenHighway = bestRoute.warnings.some(w => forbiddenHighways.includes(w.roadType));
+                    
+                    if (hasForbiddenHighway) {
+                        console.warn('Route contains forbidden highways for hikers, attempting aggressive avoidance...');
+                        // Try one more time with more aggressive waypoint insertion
+                        const aggressiveRoute = await tryAvoidUnsafeRoads(
+                            startLat, startLon, destLat, destLon, viaPoints, 
+                            bestRoute.route, vehicleType
+                        );
+                        if (aggressiveRoute && aggressiveRoute.routes) {
+                            const aggressiveWarnings = await checkRouteSafety(aggressiveRoute, vehicleType);
+                            const hasForbiddenAfterAggressive = aggressiveWarnings.some(w => forbiddenHighways.includes(w.roadType));
+                            if (!hasForbiddenAfterAggressive) {
+                                return aggressiveRoute;
+                            }
+                        }
+                        // If still has forbidden highways, reject and try without via points if any exist
+                        if (viaPoints.length > 0) {
+                            console.warn('Route still contains forbidden highways, trying without via points...');
+                            const directRoute = await getRoute(startLat, startLon, destLat, destLon, [], true);
+                            if (directRoute.routes && directRoute.routes.length > 0) {
+                                // Check all alternatives
+                                for (const altRoute of directRoute.routes) {
+                                    const altRouteData = { routes: [altRoute], code: directRoute.code };
+                                    const directWarnings = await checkRouteSafety(altRouteData, vehicleType);
+                                    const hasForbiddenDirect = directWarnings.some(w => forbiddenHighways.includes(w.roadType));
+                                    if (!hasForbiddenDirect) {
+                                        return altRouteData;
+                                    }
+                                }
+                            }
+                        }
+                        // REJECT: Throw error to prevent route from being displayed
+                        const forbiddenTypes = bestRoute.warnings.filter(w => forbiddenHighways.includes(w.roadType)).map(w => w.roadType);
+                        const uniqueForbidden = [...new Set(forbiddenTypes)];
+                        throw new Error(`ROUTE_REJECTED: Route contains forbidden highways for hikers: ${uniqueForbidden.join(', ')}. Cannot find safe alternative. Please add via points to avoid these roads.`);
+                    }
+                }
+                
                 // Return best route (even if it has some unsafe segments - we'll warn about them)
                 return bestRoute.route;
             } catch (error) {
@@ -1323,31 +1450,63 @@
             }
         }
 
-        // Find hiking routes (route=hiking, type=route) between waypoints
-        async function findHikingRoutes(startLat, startLon, endLat, endLon) {
+        // Find hiking routes (route=hiking, type=route) along the path
+        // Search for official hiking routes along the route coordinates
+        async function findHikingRoutes(routeCoordinates) {
             try {
-                // Search for hiking routes in the area between start and end
-                const centerLat = (startLat + endLat) / 2;
-                const centerLon = (startLon + endLon) / 2;
-                const distance = haversineDistance(startLat, startLon, endLat, endLon);
-                const radius = Math.max(5000, distance * 1000 * 0.5); // At least 5km, or half the distance
+                const hikingRoutes = [];
+                const checkedLocations = new Set();
                 
-                const query = `
-                    [out:json][timeout:25];
-                    (
-                      relation["route"="hiking"]["type"="route"](around:${radius},${centerLat},${centerLon});
-                      way["route"="hiking"]["type"="route"](around:${radius},${centerLat},${centerLon});
-                    );
-                    out center;
-                `;
+                // Sample points along the route (every 5km) to search for hiking routes
+                const sampleInterval = Math.max(1, Math.floor(routeCoordinates.length / Math.max(10, Math.floor(routeCoordinates.length / 50))));
+                
+                for (let i = 0; i < routeCoordinates.length; i += sampleInterval) {
+                    const [lon, lat] = routeCoordinates[i];
+                    const locationKey = `${lat.toFixed(3)},${lon.toFixed(3)}`;
+                    
+                    if (checkedLocations.has(locationKey)) continue;
+                    checkedLocations.add(locationKey);
+                    
+                    const query = `
+                        [out:json][timeout:25];
+                        (
+                          relation["route"="hiking"]["type"="route"](around:500,${lat},${lon});
+                        );
+                        out body;
+                    `;
 
-                const response = await fetch('https://overpass-api.de/api/interpreter', {
-                    method: 'POST',
-                    body: query
-                });
+                    const response = await fetch('https://overpass-api.de/api/interpreter', {
+                        method: 'POST',
+                        body: query
+                    });
 
-                const data = await response.json();
-                return data.elements || [];
+                    const data = await response.json();
+                    
+                    for (const element of data.elements || []) {
+                        if (element.type === 'relation' && element.tags) {
+                            const routeName = element.tags.name || element.tags.ref || 'Unnamed Hiking Route';
+                            const routeRef = element.tags.ref || '';
+                            
+                            // Check if we already have this route
+                            const existingRoute = hikingRoutes.find(r => r.id === element.id);
+                            if (!existingRoute) {
+                                hikingRoutes.push({
+                                    id: element.id,
+                                    name: routeName,
+                                    ref: routeRef,
+                                    lat: lat,
+                                    lon: lon,
+                                    type: element.tags.type,
+                                    network: element.tags.network
+                                });
+                            }
+                        }
+                    }
+                    
+                    await delay(200); // Rate limiting
+                }
+                
+                return hikingRoutes;
             } catch (error) {
                 console.error('Hiking route search failed:', error);
                 return [];
@@ -1355,13 +1514,17 @@
         }
 
         // Find drinking water points along route
+        // Search radius: 2000 m around rest stops (matches BRouter)
+        // Minimum 4km between water points (matches BRouter)
+        // OSM tags: amenity=drinking_water, amenity=fountain, natural=spring (matches BRouter)
         async function findDrinkingWater(lat, lon, radius = 2000, countryFilter = null) {
             try {
+                // Overpass query for water points (matches BRouter specification)
                 const query = `
                     [out:json][timeout:25];
                     (
-                      node["drinking_water:refill"="yes"](around:${radius},${lat},${lon});
-                      node["drinking_water"="yes"](around:${radius},${lat},${lon});
+                      node["amenity"="drinking_water"](around:${radius},${lat},${lon});
+                      node["amenity"="fountain"](around:${radius},${lat},${lon});
                       node["natural"="spring"](around:${radius},${lat},${lon});
                     );
                     out body;
@@ -1387,7 +1550,7 @@
                         lon: element.lon,
                         name: name,
                         type: isSpring ? 'spring' : 'water',
-                        note: isSpring ? 'Drink it at your own risk' : null
+                        note: isSpring ? 'Drink at your own risk' : null
                     });
                 }
 
@@ -1411,11 +1574,17 @@
         }
 
         // Check road types for safety (hikers and cyclists)
-        async function checkRoadTypes(lat, lon, radius = 50) {
+        async function checkRoadTypes(lat, lon, radius = 150) {  // Increased to 150m for better detection of road types
             try {
+                // Check for highways and ferry routes
+                // Use larger radius to ensure we catch the road type even if point is slightly off
                 const query = `
                     [out:json][timeout:25];
-                    way(around:${radius},${lat},${lon})["highway"];
+                    (
+                      way(around:${radius},${lat},${lon})["highway"];
+                      way(around:${radius},${lat},${lon})["route"="ferry"];
+                      relation(around:${radius},${lat},${lon})["route"="ferry"];
+                    );
                     out body;
                 `;
 
@@ -1428,12 +1597,28 @@
                 const roadTypes = [];
 
                 for (const element of data.elements || []) {
-                    if (element.type !== 'way' || !element.tags) continue;
-                    const highway = element.tags.highway;
-                    const foot = element.tags.foot;
-                    const hiking = element.tags.hiking;
+                    if (!element.tags) continue;
                     
-                    if (highway) {
+                    // Check for ferry routes (allowed for all vehicle types)
+                    const route = element.tags.route;
+                    const highway = element.tags.highway;
+                    
+                    if (route === 'ferry' || highway === 'ferry') {
+                        roadTypes.push({
+                            highway: 'ferry',
+                            route: 'ferry',
+                            foot: 'yes', // Ferries allow foot traffic
+                            hiking: 'yes',
+                            name: element.tags.name || 'Ferry Route'
+                        });
+                        continue;
+                    }
+                    
+                    // Regular highway check
+                    if (element.type === 'way' && highway) {
+                        const foot = element.tags.foot;
+                        const hiking = element.tags.hiking;
+                        
                         roadTypes.push({
                             highway: highway,
                             foot: foot,
@@ -1452,6 +1637,11 @@
 
         // Check if road is safe for vehicle type
         function isRoadSafe(roadType, vehicleType) {
+            // Ferry routes are allowed for all vehicle types (hikers, cyclists, cars, trucks)
+            if (roadType.highway === 'ferry' || roadType.route === 'ferry') {
+                return true;
+            }
+            
             const unsafeRoads = ['motorway', 'trunk', 'primary', 'primary_link', 'motorway_link', 'trunk_link'];
             
             if (unsafeRoads.includes(roadType.highway)) {
@@ -1462,18 +1652,26 @@
                 const allowedRoads = ['cycleway', 'path', 'track', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street'];
                 return allowedRoads.includes(roadType.highway);
             } else if (vehicleType === 'hiker') {
-                const allowedRoads = ['footway', 'path', 'track', 'steps', 'bridleway'];
-                if (allowedRoads.includes(roadType.highway)) {
+                // HIKER FILTERS - Priority-based road safety
+                
+                // Priority 1 - Dedicated hiking paths (always allowed)
+                const priority1Roads = ['footway', 'path', 'track', 'steps', 'bridleway'];
+                if (priority1Roads.includes(roadType.highway)) {
                     return true;
                 }
-                // Check for hiking/foot designations
+                
+                // Priority 2 - Roads with hiking/foot designations
                 if (roadType.hiking === 'yes' || roadType.foot === 'designated') {
                     return true;
                 }
-                // Allow some minor roads if they have foot designation
-                if (['secondary', 'tertiary', 'unclassified', 'residential'].includes(roadType.highway)) {
+                
+                // Priority 3 - Minor roads (only if foot is not explicitly forbidden)
+                const priority3Roads = ['secondary', 'tertiary', 'unclassified', 'residential'];
+                if (priority3Roads.includes(roadType.highway)) {
                     return roadType.foot !== 'no';
                 }
+                
+                // All other roads are not allowed for hikers
                 return false;
             }
 
@@ -1516,39 +1714,120 @@
                     });
                 }
 
-                // Try to find alternative routes by adding waypoints that avoid unsafe areas
-                // Search for safe roads near unsafe segments - try multiple attempts
+                // For hikers: Check if any segment uses forbidden highways
+                // If found, add intermediate waypoints to force path/track usage
                 const avoidanceWaypoints = [];
                 const processedLocations = new Set();
+                
+                // For hikers, prioritize finding paths/tracks (Priority 1 roads)
+                const forbiddenHighways = ['motorway', 'trunk', 'primary', 'primary_link', 'motorway_link', 'trunk_link'];
+                const priority1Roads = ['footway', 'path', 'track', 'steps', 'bridleway'];
+                
+                // Get route coordinates to find points BEFORE unsafe segments
+                const routeCoordinates = route.routes[0].geometry.coordinates;
                 
                 for (const segment of unsafeSegments) {
                     const locationKey = `${segment.lat.toFixed(3)},${segment.lon.toFixed(3)}`;
                     if (processedLocations.has(locationKey)) continue;
                     processedLocations.add(locationKey);
                     
-                    // Search in increasing radius: 1km, 2km, 3km
-                    for (const radius of [1000, 2000, 3000]) {
-                        const safeRoads = await findSafeRoadsNearby(segment.lat, segment.lon, radius, vehicleType);
-                        if (safeRoads.length > 0) {
-                            // Use the closest safe road point
-                            let closestSafeRoad = safeRoads[0];
-                            let minDist = haversineDistance(segment.lat, segment.lon, safeRoads[0].lat, safeRoads[0].lon);
-                            for (const road of safeRoads) {
-                                const dist = haversineDistance(segment.lat, segment.lon, road.lat, road.lon);
-                                if (dist < minDist) {
-                                    minDist = dist;
-                                    closestSafeRoad = road;
-                                }
-                            }
-                            
-                            avoidanceWaypoints.push({
-                                lat: closestSafeRoad.lat,
-                                lon: closestSafeRoad.lon,
-                                name: `Avoid ${segment.roadType}`
-                            });
-                            break; // Found a safe road, move to next segment
+                    // Check if this is a forbidden highway (for hikers)
+                    const isForbiddenHighway = vehicleType === 'hiker' && forbiddenHighways.includes(segment.roadType);
+                    
+                    // For hikers with forbidden highways, prioritize finding paths/tracks
+                    if (isForbiddenHighway) {
+                        console.log(`Found forbidden highway ${segment.roadType} for hiker, searching for paths/tracks...`);
+                        
+                        // Find point BEFORE the unsafe segment (go back along route)
+                        let beforePoint = null;
+                        if (segment.index > 0) {
+                            // Go back 10-20 points along the route to find a point before the unsafe segment
+                            const lookbackPoints = Math.min(20, Math.floor(routeCoordinates.length * 0.05));
+                            const beforeIndex = Math.max(0, segment.index - lookbackPoints);
+                            const [beforeLon, beforeLat] = routeCoordinates[beforeIndex];
+                            beforePoint = { lat: beforeLat, lon: beforeLon };
                         }
-                        await delay(200); // Rate limiting
+                        
+                        // Search for Priority 1 roads (paths/tracks) in increasing radius
+                        // Start from before point if available, otherwise from unsafe segment
+                        const searchLat = beforePoint ? beforePoint.lat : segment.lat;
+                        const searchLon = beforePoint ? beforePoint.lon : segment.lon;
+                        
+                        for (const radius of [500, 1000, 2000, 3000, 5000]) {  // Increased max radius
+                            // Request paths/tracks to be prioritized
+                            const safeRoads = await findSafeRoadsNearby(searchLat, searchLon, radius, vehicleType, true);
+                            
+                            if (safeRoads.length > 0) {
+                                // safeRoads are already sorted with Priority 1 roads first
+                                // Prefer Priority 1 roads (paths/tracks), but consider distance
+                                let bestRoad = safeRoads[0];
+                                let minDist = haversineDistance(searchLat, searchLon, safeRoads[0].lat, safeRoads[0].lon);
+                                
+                                // If first road is Priority 1, use it (already sorted)
+                                if (safeRoads[0].isPriority1) {
+                                    bestRoad = safeRoads[0];
+                                } else {
+                                    // Look for closest Priority 1 road, accept if within 2x distance (more lenient)
+                                    for (const road of safeRoads) {
+                                        if (road.isPriority1) {
+                                            const dist = haversineDistance(searchLat, searchLon, road.lat, road.lon);
+                                            if (dist < minDist * 2) {  // More lenient for Priority 1
+                                                minDist = dist;
+                                                bestRoad = road;
+                                                break; // Found a Priority 1 road, use it
+                                            }
+                                        }
+                                    }
+                                    
+                                    // If no Priority 1 found within reasonable distance, use closest safe road
+                                    if (!bestRoad.isPriority1) {
+                                        for (const road of safeRoads) {
+                                            const dist = haversineDistance(searchLat, searchLon, road.lat, road.lon);
+                                            if (dist < minDist) {
+                                                minDist = dist;
+                                                bestRoad = road;
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                avoidanceWaypoints.push({
+                                    lat: bestRoad.lat,
+                                    lon: bestRoad.lon,
+                                    name: bestRoad.isPriority1 
+                                        ? `Force path/track (avoid ${segment.roadType})` 
+                                        : `Avoid ${segment.roadType}`
+                                });
+                                break; // Found a safe road, move to next segment
+                            }
+                            await delay(200); // Rate limiting
+                        }
+                    } else {
+                        // For other unsafe roads or non-hikers, use standard approach
+                        // Search in increasing radius: 1km, 2km, 3km
+                        for (const radius of [1000, 2000, 3000]) {
+                            const safeRoads = await findSafeRoadsNearby(segment.lat, segment.lon, radius, vehicleType);
+                            if (safeRoads.length > 0) {
+                                // Use the closest safe road point
+                                let closestSafeRoad = safeRoads[0];
+                                let minDist = haversineDistance(segment.lat, segment.lon, safeRoads[0].lat, safeRoads[0].lon);
+                                for (const road of safeRoads) {
+                                    const dist = haversineDistance(segment.lat, segment.lon, road.lat, road.lon);
+                                    if (dist < minDist) {
+                                        minDist = dist;
+                                        closestSafeRoad = road;
+                                    }
+                                }
+                                
+                                avoidanceWaypoints.push({
+                                    lat: closestSafeRoad.lat,
+                                    lon: closestSafeRoad.lon,
+                                    name: `Avoid ${segment.roadType}`
+                                });
+                                break; // Found a safe road, move to next segment
+                            }
+                            await delay(200); // Rate limiting
+                        }
                     }
                 }
 
@@ -1640,7 +1919,7 @@
         }
 
         // Find safe roads nearby an unsafe location
-        async function findSafeRoadsNearby(lat, lon, radius, vehicleType) {
+        async function findSafeRoadsNearby(lat, lon, radius, vehicleType, preferPathsTracks = false) {
             try {
                 const query = `
                     [out:json][timeout:25];
@@ -1655,6 +1934,7 @@
 
                 const data = await response.json();
                 const safeRoads = [];
+                const priority1Roads = ['footway', 'path', 'track', 'steps', 'bridleway'];
 
                 for (const element of data.elements || []) {
                     if (element.type !== 'way' || !element.tags) continue;
@@ -1668,13 +1948,31 @@
                     
                     if (isRoadSafe(roadType, vehicleType)) {
                         if (element.center) {
+                            // Check if this is a Priority 1 road (path/track) for hikers
+                            const isPriority1 = preferPathsTracks && vehicleType === 'hiker' && (
+                                priority1Roads.includes(roadType.highway) ||
+                                roadType.hiking === 'yes' ||
+                                roadType.foot === 'designated'
+                            );
+                            
                             safeRoads.push({
                                 lat: element.center.lat,
                                 lon: element.center.lon,
-                                name: roadType.name
+                                name: roadType.name,
+                                highway: roadType.highway,
+                                isPriority1: isPriority1 || false
                             });
                         }
                     }
+                }
+
+                // If preferPathsTracks, sort to prioritize Priority 1 roads
+                if (preferPathsTracks && vehicleType === 'hiker') {
+                    safeRoads.sort((a, b) => {
+                        if (a.isPriority1 && !b.isPriority1) return -1;
+                        if (!a.isPriority1 && b.isPriority1) return 1;
+                        return 0; // Keep original order for same priority
+                    });
                 }
 
                 return safeRoads;
@@ -1693,10 +1991,15 @@
             const warnings = [];
             const coordinates = route.routes[0].geometry.coordinates;
             
-            // Sample points along the route more efficiently for route comparison
-            // Use fewer samples for faster comparison, more for final detailed check
-            const sampleInterval = Math.max(1, Math.floor(coordinates.length / 15));
+            // For hikers, check VERY thoroughly to catch all unsafe segments
+            // Check every 10th point for hikers to ensure we catch all trunk roads
+            const sampleInterval = vehicleType === 'hiker' 
+                ? Math.max(1, Math.min(10, Math.floor(coordinates.length / 100)))  // Check every 10th point (or every 100th if route is very long)
+                : Math.max(1, Math.floor(coordinates.length / 15));  // Standard for cyclists
             const checkedPoints = new Set();
+            
+            // Forbidden highways that are absolutely not allowed for hikers
+            const forbiddenHighways = ['motorway', 'trunk', 'primary', 'primary_link', 'motorway_link', 'trunk_link'];
 
             for (let i = 0; i < coordinates.length; i += sampleInterval) {
                 const [lon, lat] = coordinates[i];
@@ -1706,25 +2009,32 @@
                 if (checkedPoints.has(pointKey)) continue;
                 checkedPoints.add(pointKey);
 
-                const roadTypes = await checkRoadTypes(lat, lon, 50);
+                const roadTypes = await checkRoadTypes(lat, lon, 150);  // Increased to 150m radius for better detection
                 
                 for (const roadType of roadTypes) {
                     if (!isRoadSafe(roadType, vehicleType)) {
-                        // Check if we already have a warning for this location
+                        // Check if we already have a warning for this location (use larger tolerance)
                         const existingWarning = warnings.find(w => 
-                            Math.abs(w.lat - lat) < 0.002 && 
-                            Math.abs(w.lon - lon) < 0.002 &&
+                            Math.abs(w.lat - lat) < 0.005 &&  // Increased tolerance to 0.005 (~500m)
+                            Math.abs(w.lon - lon) < 0.005 &&
                             w.roadType === roadType.highway
                         );
                         
                         if (!existingWarning) {
+                            const isForbidden = vehicleType === 'hiker' && forbiddenHighways.includes(roadType.highway);
                             warnings.push({
                                 lat: lat,
                                 lon: lon,
                                 roadType: roadType.highway,
                                 roadName: roadType.name,
-                                message: `Unsafe road type: ${roadType.highway}`
+                                message: `Unsafe road type: ${roadType.highway}`,
+                                isForbidden: isForbidden  // Mark forbidden highways for hikers
                             });
+                            
+                            // Log forbidden highways immediately for debugging
+                            if (isForbidden) {
+                                console.error(`FORBIDDEN HIGHWAY DETECTED: ${roadType.highway} at ${lat.toFixed(4)}, ${lon.toFixed(4)}`);
+                            }
                         }
                     }
                 }
@@ -1941,14 +2251,20 @@
         }
 
         // Find rest spots for hikers and cyclists (huts and shelters)
+        // Search radius: 5000 m around rest stops (matches BRouter - increased from 3000m)
+        // Priority order: 1. alpine_hut, 2. wilderness_hut, 3. hut, 4. cabin, 5. shelter (matches BRouter)
+        // Accessibility: access=yes or no restriction, locked=no or no locked tag, exclude dnt:lock=yes
         async function findHikerRestSpots(lat, lon, radius = 5000, countryFilter = null) {
             try {
+                // Overpass query for huts/cabins (matches BRouter specification)
+                // Note: We also include shelter, camp_site, picnic_table for additional options
                 const query = `
                     [out:json][timeout:25];
                     (
-                      node["tourism"="wilderness_hut"](around:${radius},${lat},${lon});
                       node["tourism"="alpine_hut"](around:${radius},${lat},${lon});
-                      node["amenity"="shelter"]["shelter_type"="basic_hut"]["locked"="no"](around:${radius},${lat},${lon});
+                      node["tourism"="wilderness_hut"](around:${radius},${lat},${lon});
+                      node["tourism"="hut"](around:${radius},${lat},${lon});
+                      node["tourism"="cabin"](around:${radius},${lat},${lon});
                       node["amenity"="shelter"](around:${radius},${lat},${lon});
                       node["tourism"="camp_site"](around:${radius},${lat},${lon});
                       node["leisure"="picnic_table"](around:${radius},${lat},${lon});
@@ -1971,19 +2287,41 @@
                     let type = tags.tourism || tags.amenity || tags.leisure || 'rest_area';
                     let name = tags.name || 'Unnamed spot';
                     
-                    // Categorize the shelter type
-                    if (tags.tourism === 'wilderness_hut') {
-                        type = 'wilderness_hut';
-                        name = tags.name || 'Wilderness Hut';
-                    } else if (tags.tourism === 'alpine_hut') {
+                    // BRouter-style accessibility filtering:
+                    // - access=yes OR no access restriction
+                    // - locked=no OR no locked tag
+                    // - Exclude network cabins requiring membership (dnt:lock=yes)
+                    const hasAccess = !tags.access || tags.access === 'yes';
+                    const isUnlocked = !tags.locked || tags.locked === 'no';
+                    const notMembershipOnly = tags['dnt:lock'] !== 'yes';
+                    
+                    // Only include accessible and unlocked spots (matches BRouter)
+                    if (!hasAccess || !isUnlocked || !notMembershipOnly) {
+                        continue;
+                    }
+                    
+                    // Categorize the shelter type (Priority order: 1. alpine_hut, 2. wilderness_hut, 3. hut, 4. cabin, 5. shelter, 6. camp_site, 7. picnic_table)
+                    if (tags.tourism === 'alpine_hut') {
                         type = 'alpine_hut';
                         name = tags.name || 'Alpine Hut';
-                    } else if (tags.shelter_type === 'basic_hut' && tags.locked === 'no') {
-                        type = 'basic_hut';
-                        name = tags.name || 'Basic Hut (Unlocked)';
+                    } else if (tags.tourism === 'wilderness_hut') {
+                        type = 'wilderness_hut';
+                        name = tags.name || 'Wilderness Hut';
+                    } else if (tags.tourism === 'hut') {
+                        type = 'hut';
+                        name = tags.name || 'Hut';
+                    } else if (tags.tourism === 'cabin') {
+                        type = 'cabin';
+                        name = tags.name || 'Cabin';
                     } else if (tags.amenity === 'shelter') {
                         type = 'shelter';
                         name = tags.name || 'Shelter';
+                    } else if (tags.tourism === 'camp_site') {
+                        type = 'camp_site';
+                        name = tags.name || 'Camp Site';
+                    } else if (tags.leisure === 'picnic_table') {
+                        type = 'picnic_table';
+                        name = tags.name || 'Picnic Table';
                     }
 
                     spots.push({
@@ -1992,6 +2330,8 @@
                         type: type,
                         name: name,
                         locked: tags.locked,
+                        access: tags.access,
+                        network: tags.network, // Include network info (e.g., DNT)
                         shelter_type: tags.shelter_type
                     });
                 }
@@ -2387,8 +2727,8 @@
             addedHuts = []; // Reset huts tracking
         }
 
-        // Filter water points by minimum distance (4 km)
-        function filterWaterPointsByDistance(waterPoints, minDistanceKm = 4) {
+        // Filter water points by minimum distance (3 km)
+        function filterWaterPointsByDistance(waterPoints, minDistanceKm = 3) {
             const filtered = [];
             
             for (const water of waterPoints) {
@@ -2620,23 +2960,55 @@
             }
 
             const unsafeRoadTypes = [...new Set(warnings.map(w => w.roadType))];
+            const forbiddenHighways = ['motorway', 'trunk', 'primary', 'primary_link', 'motorway_link', 'trunk_link'];
+            const hasForbiddenHighways = warnings.some(w => w.isForbidden || (vehicleType === 'hiker' && forbiddenHighways.includes(w.roadType)));
             
-            warningsDiv.innerHTML = `
-                <div style="background: #fff3cd; border: 2px solid #ffc107; border-radius: 4px; padding: 10px; margin-bottom: 10px;">
-                    <strong style="color: #856404;">⚠️ Route contains ${warnings.length} unsafe road segment${warnings.length > 1 ? 's' : ''}</strong>
-                    <p style="margin: 5px 0; color: #856404; font-size: 0.9em;">
-                        The route includes forbidden road types: <strong>${unsafeRoadTypes.join(', ')}</strong>. 
-                        These roads are unsafe for ${vehicleType === 'hiker' ? 'hikers' : 'cyclists'}.
-                    </p>
-                    <p style="margin: 5px 0; color: #856404; font-size: 0.85em;">
-                        <strong>Recommendation:</strong> Add via points around these areas to force the route to use safer roads, 
-                        or manually adjust your route to avoid these segments.
-                    </p>
-                </div>
-                ${warnings.map((warning, index) => `
-                    <div class="axle-warning-item" style="margin-bottom: 10px;">
-                        <div class="axle-warning-title">Warning ${index + 1}: ${warning.roadType}</div>
-                        <div class="axle-warning-text">
+            // Show prominent warning for forbidden highways (especially for hikers)
+            let warningBanner = '';
+            if (hasForbiddenHighways && vehicleType === 'hiker') {
+                const forbiddenTypes = warnings.filter(w => forbiddenHighways.includes(w.roadType)).map(w => w.roadType);
+                const uniqueForbidden = [...new Set(forbiddenTypes)];
+                warningBanner = `
+                    <div style="background: #f8d7da; border: 3px solid #dc3545; border-radius: 4px; padding: 15px; margin-bottom: 15px;">
+                        <strong style="color: #721c24; font-size: 1.1em;">🚫 CRITICAL: Route contains FORBIDDEN highways for hikers!</strong>
+                        <p style="margin: 8px 0; color: #721c24; font-size: 0.95em;">
+                            The route includes absolutely forbidden road types: <strong>${uniqueForbidden.join(', ')}</strong>.
+                            These roads are <strong>NOT SAFE</strong> for hikers and should be avoided at all costs.
+                        </p>
+                        <p style="margin: 8px 0; color: #721c24; font-size: 0.9em;">
+                            <strong>Action Required:</strong> The routing system attempted to avoid these roads but was unable to find a safe alternative.
+                            Please add via points to manually route around these dangerous segments, or choose a different start/end location.
+                        </p>
+                    </div>
+                `;
+            } else {
+                warningBanner = `
+                    <div style="background: #fff3cd; border: 2px solid #ffc107; border-radius: 4px; padding: 10px; margin-bottom: 10px;">
+                        <strong style="color: #856404;">⚠️ Route contains ${warnings.length} unsafe road segment${warnings.length > 1 ? 's' : ''}</strong>
+                        <p style="margin: 5px 0; color: #856404; font-size: 0.9em;">
+                            The route includes unsafe road types: <strong>${unsafeRoadTypes.join(', ')}</strong>. 
+                            These roads are unsafe for ${vehicleType === 'hiker' ? 'hikers' : 'cyclists'}.
+                        </p>
+                        <p style="margin: 5px 0; color: #856404; font-size: 0.85em;">
+                            <strong>Recommendation:</strong> Add via points around these areas to force the route to use safer roads, 
+                            or manually adjust your route to avoid these segments.
+                        </p>
+                    </div>
+                `;
+            }
+            
+            warningsDiv.innerHTML = warningBanner + warnings.map((warning, index) => {
+                const isForbidden = warning.isForbidden || (vehicleType === 'hiker' && forbiddenHighways.includes(warning.roadType));
+                const warningStyle = isForbidden 
+                    ? 'background: #f8d7da; border: 2px solid #dc3545;'
+                    : 'background: #fff3cd; border: 1px solid #ffc107;';
+                const textColor = isForbidden ? '#721c24' : '#856404';
+                return `
+                    <div class="axle-warning-item" style="margin-bottom: 10px; ${warningStyle} border-radius: 4px; padding: 8px;">
+                        <div class="axle-warning-title" style="color: ${textColor}; font-weight: bold;">
+                            ${isForbidden ? '🚫 FORBIDDEN: ' : '⚠️ Warning ' + (index + 1) + ': '}${warning.roadType}
+                        </div>
+                        <div class="axle-warning-text" style="color: ${textColor}; font-size: 0.9em;">
                             <strong>Road:</strong> ${warning.roadName || 'Unnamed road'}<br>
                             <strong>Location:</strong> ${warning.lat.toFixed(4)}, ${warning.lon.toFixed(4)}<br>
                             <button onclick="map.setView([${warning.lat}, ${warning.lon}], 14)" 
@@ -2645,13 +3017,17 @@
                             </button>
                         </div>
                     </div>
-                `).join('')}
-            `;
+                `;
+            }).join('');
 
             section.style.display = 'block';
             
             // Log warning for debugging
-            console.warn(`Route contains ${warnings.length} unsafe road segments: ${unsafeRoadTypes.join(', ')}`);
+            if (hasForbiddenHighways && vehicleType === 'hiker') {
+                console.error(`CRITICAL: Route contains FORBIDDEN highways for hikers: ${unsafeRoadTypes.join(', ')}`);
+            } else {
+                console.warn(`Route contains ${warnings.length} unsafe road segments: ${unsafeRoadTypes.join(', ')}`);
+            }
         }
 
         // Update country warnings
@@ -2787,20 +3163,44 @@
                 // For hikers and cyclists, try to find safer routes that avoid unsafe roads
                 loadingText.textContent = 'Calculating route...';
                 let route;
-                if (vehicleType === 'hiker' || vehicleType === 'bike') {
-                    loadingText.textContent = 'Finding safest route (avoiding unsafe roads)...';
-                    route = await findSaferRoute(
-                        startCoords.lat, startCoords.lon,
-                        destCoords.lat, destCoords.lon,
-                        viaPoints,
-                        vehicleType
-                    );
-                } else {
-                    route = await getRoute(
-                        startCoords.lat, startCoords.lon,
-                        destCoords.lat, destCoords.lon,
-                        viaPoints
-                    );
+                try {
+                    if (vehicleType === 'hiker' || vehicleType === 'bike') {
+                        loadingText.textContent = 'Finding safest route (avoiding unsafe roads)...';
+                        route = await findSaferRoute(
+                            startCoords.lat, startCoords.lon,
+                            destCoords.lat, destCoords.lon,
+                            viaPoints,
+                            vehicleType
+                        );
+                    } else {
+                        route = await getRoute(
+                            startCoords.lat, startCoords.lon,
+                            destCoords.lat, destCoords.lon,
+                            viaPoints
+                        );
+                    }
+                } catch (routeError) {
+                    // Handle route rejection (forbidden highways for hikers)
+                    if (routeError.message && routeError.message.startsWith('ROUTE_REJECTED:')) {
+                        loadingDiv.style.display = 'none';
+                        calculateBtn.disabled = false;
+                        const errorMsg = routeError.message.replace('ROUTE_REJECTED: ', '');
+                        alert(`ROUTE REJECTED: ${errorMsg}\n\nThe route contains FORBIDDEN highways for hikers and cannot be displayed.\n\nPlease add via points to manually route around these dangerous segments.`);
+                        return;
+                    }
+                    // Other routing errors
+                    loadingDiv.style.display = 'none';
+                    calculateBtn.disabled = false;
+                    alert(`Failed to calculate route: ${routeError.message}\n\nPlease check your addresses and try again.`);
+                    return;
+                }
+                
+                // Handle route rejection errors for hikers
+                if (!route || !route.routes || route.routes.length === 0) {
+                    loadingDiv.style.display = 'none';
+                    calculateBtn.disabled = false;
+                    alert('Failed to calculate route. Please check your addresses and try again.');
+                    return;
                 }
                 
                 // Check if calculation was cancelled after route calculation
@@ -2809,15 +3209,85 @@
                     return;
                 }
 
-                // For hiking, search for hiking routes
+                // CRITICAL: For hikers, validate route BEFORE displaying - reject if it contains forbidden highways
+                if (vehicleType === 'hiker') {
+                    loadingText.textContent = 'Validating route safety (checking for forbidden roads)...';
+                    console.log('Validating route for hiker - checking for forbidden highways...');
+                    const routeValidation = await checkRouteSafety(route, vehicleType);
+                    console.log(`Route validation found ${routeValidation.length} unsafe segments:`, routeValidation.map(w => w.roadType));
+                    
+                    const forbiddenHighways = ['motorway', 'trunk', 'primary', 'primary_link', 'motorway_link', 'trunk_link'];
+                    const hasForbiddenHighway = routeValidation.some(w => forbiddenHighways.includes(w.roadType));
+                    
+                    if (hasForbiddenHighway) {
+                        const forbiddenTypes = routeValidation.filter(w => forbiddenHighways.includes(w.roadType)).map(w => w.roadType);
+                        const uniqueForbidden = [...new Set(forbiddenTypes)];
+                        
+                        // Check if via points are being respected
+                        const routeCoords = route.routes[0].geometry.coordinates;
+                        let viaPointsRespected = true;
+                        if (viaPoints.length > 0) {
+                            console.log('Checking if via points are respected in route...');
+                            for (const viaPoint of viaPoints) {
+                                let closestDist = Infinity;
+                                for (const [lon, lat] of routeCoords) {
+                                    const dist = haversineDistance(lat, lon, viaPoint.lat, viaPoint.lon);
+                                    if (dist < closestDist) {
+                                        closestDist = dist;
+                                    }
+                                }
+                                // If via point is more than 500m from route, it's not being respected
+                                if (closestDist > 0.5) {
+                                    viaPointsRespected = false;
+                                    console.warn(`Via point ${viaPoint.name || 'unnamed'} is ${(closestDist * 1000).toFixed(0)}m from route - not respected!`);
+                                }
+                            }
+                        }
+                        
+                        // REJECT THE ROUTE - Don't display it
+                        loadingDiv.style.display = 'none';
+                        calculateBtn.disabled = false;
+                        
+                        let errorMsg = `ROUTE REJECTED: The calculated route contains FORBIDDEN highways for hikers: ${uniqueForbidden.join(', ')}.\n\n` +
+                              `These roads are NOT SAFE for hiking and cannot be used.\n\n`;
+                        
+                        if (!viaPointsRespected && viaPoints.length > 0) {
+                            errorMsg += `WARNING: Your via points are being IGNORED by the routing engine!\n` +
+                                       `The route does not pass through your specified via points.\n\n`;
+                        }
+                        
+                        errorMsg += `Please:\n` +
+                              `1. Add via points to manually route around these dangerous segments\n` +
+                              `2. Choose different start/end locations\n` +
+                              `3. Break the route into smaller segments\n\n` +
+                              `The route will NOT be displayed for your safety.`;
+                        
+                        alert(errorMsg);
+                        
+                        console.error('ROUTE REJECTED: Contains forbidden highways:', uniqueForbidden);
+                        if (!viaPointsRespected) {
+                            console.error('ROUTE REJECTED: Via points are not being respected!');
+                        }
+                        return; // Exit - don't display the route
+                    }
+                }
+
+                // For hiking, search for hiking routes along the calculated route
                 if (vehicleType === 'hiker') {
                     loadingText.textContent = 'Searching for hiking routes...';
-                    const hikingRoutes = await findHikingRoutes(
-                        startCoords.lat, startCoords.lon,
-                        destCoords.lat, destCoords.lon
-                    );
-                    // Note: Hiking routes found but using OSRM foot profile for routing
-                    // Could be used for display or alternative routing in future
+                    const routeCoordinates = route.routes[0].geometry.coordinates;
+                    const hikingRoutes = await findHikingRoutes(routeCoordinates);
+                    
+                    // Display hiking routes found along the path
+                    if (hikingRoutes.length > 0) {
+                        console.log(`Found ${hikingRoutes.length} hiking routes along the path`);
+                        hikingRoutes.forEach(hikingRoute => {
+                            const popupContent = hikingRoute.ref 
+                                ? `<strong>Hiking Route: ${hikingRoute.name}</strong><br>Ref: ${hikingRoute.ref}${hikingRoute.network ? `<br>Network: ${hikingRoute.network}` : ''}<br>Coordinates: ${hikingRoute.lat.toFixed(4)}, ${hikingRoute.lon.toFixed(4)}`
+                                : `<strong>Hiking Route: ${hikingRoute.name}</strong>${hikingRoute.network ? `<br>Network: ${hikingRoute.network}` : ''}<br>Coordinates: ${hikingRoute.lat.toFixed(4)}, ${hikingRoute.lon.toFixed(4)}`;
+                            addMarker(hikingRoute.lat, hikingRoute.lon, 'water', popupContent);
+                        });
+                    }
                 }
 
                 // Draw route on map
@@ -2901,7 +3371,7 @@
                     if (vehicleType === 'hiker' || vehicleType === 'bike') {
                         // Find water points for hiking and cycling
                         const waterPoints = await findDrinkingWater(stop.lat, stop.lon, 2000, routeCountry);
-                        // Filter to ensure minimum 4km distance between water points
+                        // Filter to ensure minimum 4km distance between water points (matches BRouter)
                         const filteredWaterPoints = filterWaterPointsByDistance(waterPoints, 4);
                         filteredWaterPoints.forEach(water => {
                             const popupContent = water.note 
@@ -2912,38 +3382,43 @@
 
                         // Find huts and shelters near daily segments and rest stops
                         if (stop.type === 'daily-segment' || stop.type === 'segment-break' || stop.type === 'hiker-rest' || stop.type === 'hiker-rest-alt') {
-                            const restSpots = await findHikerRestSpots(stop.lat, stop.lon, 3000, routeCountry);
+                            const restSpots = await findHikerRestSpots(stop.lat, stop.lon, 5000, routeCountry);
                             stop.restSpots = restSpots;
 
-                            // Prioritize huts: alpine_hut, wilderness_hut, basic_hut, then other shelters
-                            const huts = restSpots.filter(s => 
-                                s.type === 'alpine_hut' || 
-                                s.type === 'wilderness_hut' || 
-                                s.type === 'basic_hut'
-                            );
-                            const otherShelters = restSpots.filter(s => 
-                                s.type !== 'alpine_hut' && 
-                                s.type !== 'wilderness_hut' && 
-                                s.type !== 'basic_hut'
-                            );
+                            // Prioritize by order: 1. alpine_hut, 2. wilderness_hut, 3. hut, 4. cabin, 5. shelter, 6. camp_site, 7. picnic_table (matches BRouter)
+                            const alpineHuts = restSpots.filter(s => s.type === 'alpine_hut');
+                            const wildernessHuts = restSpots.filter(s => s.type === 'wilderness_hut');
+                            const huts = restSpots.filter(s => s.type === 'hut');
+                            const cabins = restSpots.filter(s => s.type === 'cabin');
+                            const shelters = restSpots.filter(s => s.type === 'shelter');
+                            const campSites = restSpots.filter(s => s.type === 'camp_site');
+                            const picnicTables = restSpots.filter(s => s.type === 'picnic_table');
                             
-                            // Combine and filter by minimum distance (1300m)
-                            const allSpots = [...huts, ...otherShelters];
+                            // Combine in priority order (matches BRouter)
+                            const allSpots = [...alpineHuts, ...wildernessHuts, ...huts, ...cabins, ...shelters, ...campSites, ...picnicTables];
+                            
+                            // Filter by minimum distance (1300m)
                             const filteredSpots = filterHutsByDistance(allSpots, 1.3);
                             
-                            // Show up to 5 huts/shelters (prioritize huts, but respect distance)
+                            // Show up to 5 huts/shelters (respecting priority order and distance)
                             const spotsToShow = filteredSpots.slice(0, 5);
                             
                             spotsToShow.forEach(spot => {
                                 let typeLabel = spot.type;
                                 if (spot.type === 'alpine_hut') typeLabel = 'Alpine Hut';
                                 else if (spot.type === 'wilderness_hut') typeLabel = 'Wilderness Hut';
-                                else if (spot.type === 'basic_hut') typeLabel = 'Basic Hut (Unlocked)';
+                                else if (spot.type === 'hut') typeLabel = 'Hut';
+                                else if (spot.type === 'cabin') typeLabel = 'Cabin';
                                 else if (spot.type === 'shelter') typeLabel = 'Shelter';
+                                else if (spot.type === 'camp_site') typeLabel = 'Camp Site';
+                                else if (spot.type === 'picnic_table') typeLabel = 'Picnic Table';
+                                
+                                // Include network information if available (matches BRouter)
+                                const networkInfo = spot.network ? `<br>Network: ${spot.network}` : '';
                                 
                                 addMarker(
                                     spot.lat, spot.lon, 'parking',
-                                    `<strong>${typeLabel}</strong><br>${spot.name}<br>Coordinates: ${spot.lat.toFixed(4)}, ${spot.lon.toFixed(4)}`
+                                    `<strong>${typeLabel}</strong><br>${spot.name}${networkInfo}<br>Coordinates: ${spot.lat.toFixed(4)}, ${spot.lon.toFixed(4)}`
                                 );
                             });
                         }
@@ -3006,7 +3481,7 @@
                         
                         // Find water points
                         const waterPoints = await findDrinkingWater(lat, lon, 2000, routeCountry);
-                        // Filter to ensure minimum 4km distance between water points
+                        // Filter to ensure minimum 4km distance between water points (matches BRouter)
                         const filteredWaterPoints = filterWaterPointsByDistance(waterPoints, 4);
                         filteredWaterPoints.forEach(water => {
                             const popupContent = water.note 
@@ -3016,23 +3491,37 @@
                         });
                         
                         // Find huts and shelters
-                        const huts = await findHikerRestSpots(lat, lon, 3000, routeCountry);
-                        const priorityHuts = huts.filter(h => 
-                            h.type === 'alpine_hut' || 
-                            h.type === 'wilderness_hut' || 
-                            h.type === 'basic_hut'
-                        );
+                        const huts = await findHikerRestSpots(lat, lon, 5000, routeCountry);
+                        // Prioritize by order: 1. alpine_hut, 2. wilderness_hut, 3. hut, 4. cabin, 5. shelter, 6. camp_site, 7. picnic_table (matches BRouter)
+                        const alpineHuts = huts.filter(h => h.type === 'alpine_hut');
+                        const wildernessHuts = huts.filter(h => h.type === 'wilderness_hut');
+                        const hutTypes = huts.filter(h => h.type === 'hut');
+                        const cabins = huts.filter(h => h.type === 'cabin');
+                        const shelters = huts.filter(h => h.type === 'shelter');
+                        const campSites = huts.filter(h => h.type === 'camp_site');
+                        const picnicTables = huts.filter(h => h.type === 'picnic_table');
+                        
+                        // Combine in priority order (matches BRouter)
+                        const priorityHuts = [...alpineHuts, ...wildernessHuts, ...hutTypes, ...cabins, ...shelters, ...campSites, ...picnicTables];
+                        
                         // Filter by minimum distance (1300m)
                         const filteredHuts = filterHutsByDistance(priorityHuts, 1.3);
                         filteredHuts.slice(0, 2).forEach(spot => {
                             let typeLabel = spot.type;
                             if (spot.type === 'alpine_hut') typeLabel = 'Alpine Hut';
                             else if (spot.type === 'wilderness_hut') typeLabel = 'Wilderness Hut';
-                            else if (spot.type === 'basic_hut') typeLabel = 'Basic Hut (Unlocked)';
+                            else if (spot.type === 'hut') typeLabel = 'Hut';
+                            else if (spot.type === 'cabin') typeLabel = 'Cabin';
+                            else if (spot.type === 'shelter') typeLabel = 'Shelter';
+                            else if (spot.type === 'camp_site') typeLabel = 'Camp Site';
+                            else if (spot.type === 'picnic_table') typeLabel = 'Picnic Table';
+                            
+                            // Include network information if available (matches BRouter)
+                            const networkInfo = spot.network ? `<br>Network: ${spot.network}` : '';
                             
                             addMarker(
                                 spot.lat, spot.lon, 'parking',
-                                `<strong>${typeLabel}</strong><br>${spot.name}<br>Coordinates: ${spot.lat.toFixed(4)}, ${spot.lon.toFixed(4)}`
+                                `<strong>${typeLabel}</strong><br>${spot.name}${networkInfo}<br>Coordinates: ${spot.lat.toFixed(4)}, ${spot.lon.toFixed(4)}`
                             );
                         });
                         

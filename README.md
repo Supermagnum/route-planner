@@ -27,11 +27,20 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 - Hiking route search (`route=hiking`, `type=route`)
 - Drinking water points with refill locations
 - Natural spring locations with safety warnings
-- Shelter, hut, and camping area locations
-- Hut search near daily stops:
-  - Alpine huts (`tourism=alpine_hut`)
-  - Wilderness huts (`tourism=wilderness_hut`)
-  - Unlocked basic huts (`shelter_type=basic_hut`, `locked=no`)
+- Shelter, hut, and camping area locations (matches BRouter specification)
+- Hut search near daily stops (5 km radius, matches BRouter):
+  - Alpine huts (`tourism=alpine_hut`) - Priority 1
+  - Wilderness huts (`tourism=wilderness_hut`) - Priority 2
+  - Huts (`tourism=hut`) - Priority 3
+  - Cabins (`tourism=cabin`) - Priority 4
+  - Shelters (`amenity=shelter`) - Priority 5
+  - Camp sites (`tourism=camp_site`) - Priority 6
+  - Picnic tables (`leisure=picnic_table`) - Priority 7
+- **Accessibility filtering**: Only includes accessible and unlocked spots
+  - `access=yes` OR no access restriction
+  - `locked=no` OR no locked tag
+  - Excludes network cabins requiring membership (e.g., `dnt:lock=yes`)
+- **Network information**: Includes network information (e.g., DNT) in waypoint names when available
 - **Distance filtering**: Minimum 1300 m between huts/shelters to prevent map clutter
 - Road safety checks - avoids unsafe roads (motorways, trunk roads, primary roads)
 - Allowed roads: footway, path, track, steps, bridleway, and roads with `hiking=yes` or `foot=designated`
@@ -42,7 +51,9 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 - Segment break markers
 - Drinking water points with refill locations
 - Natural spring locations with safety warnings
-- Hut search near daily stops and segment breaks
+- Hut search near daily stops and segment breaks (5 km radius, matches BRouter)
+- **Priority order**: alpine_hut → wilderness_hut → hut → cabin → shelter → camp_site → picnic_table
+- **Accessibility filtering**: Only accessible and unlocked spots (access=yes or no restriction, locked=no or no locked tag)
 - **Distance filtering**: Minimum 1300 m between huts/shelters to prevent map clutter
 - Road safety checks - avoids unsafe roads (motorways, trunk roads, primary roads)
 - Allowed roads: cycleway, path, track, secondary, tertiary, unclassified, residential, living_street
@@ -59,13 +70,14 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 - **Calculation cancellation**: If you change inputs during calculation, the old calculation is automatically cancelled and a new one starts
 
 ### Water Points
-- Automatic detection of drinking water locations
-- Supports `drinking_water:refill=yes`
-- Supports `drinking_water=yes`
-- Natural spring detection with safety warnings
+- Automatic detection of drinking water locations (matches BRouter specification)
+- Supports `amenity=drinking_water`
+- Supports `amenity=fountain`
+- Natural spring detection with safety warnings (`natural=spring`)
 - "Drink it at your own risk" notice for springs
 - Water points shown along entire route for hiking and cycling
-- **Distance filtering**: Minimum 4 km between water points to prevent map clutter
+- **Search radius**: 2 km around rest stops (matches BRouter)
+- **Distance filtering**: Minimum 4 km between water points to prevent map clutter (matches BRouter)
 
 ### Road Safety
 - Automatic route safety checking for hikers and cyclists
@@ -197,7 +209,8 @@ The application implements rate limiting for Nominatim requests:
 - **Water point filtering**: Minimum 4 km between water points
 - **Hut filtering**: Minimum 1300 m between huts/shelters
 - **Country border respect**: If route stays within one country, water points and shelters are filtered to that country
-- Hut search: alpine huts, wilderness huts, unlocked basic huts
+- **Hut search** (5 km radius, matches BRouter): alpine huts, wilderness huts, huts, cabins, shelters, camp sites, picnic tables
+- **Accessibility**: Only accessible and unlocked spots (access=yes or no restriction, locked=no or no locked tag)
 - Road safety validation - automatically selects safest route from alternatives
 - Allowed roads: footway, path, track, steps, bridleway, or roads with hiking/foot designations
 
