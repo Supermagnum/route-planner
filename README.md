@@ -43,7 +43,16 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 - **Network information**: Includes network information (e.g., DNT) in waypoint names when available
 - **Distance filtering**: Minimum 1300 m between huts/shelters to prevent map clutter
 - Road safety checks - avoids unsafe roads (motorways, trunk roads, primary roads)
-- Allowed roads: footway, path, track, steps, bridleway, and roads with `hiking=yes` or `foot=designated`
+- **Allowed roads (priority order, highest to lowest)**:
+  1. `highway=path`
+  2. `highway=footway`
+  3. `highway=pedestrian`
+  4. `highway=bridleway`
+  5. `highway=steps`
+  6. `highway=living_street`
+  7. `highway=track`
+  8. `highway=service`
+- Routes automatically prioritize higher-priority roads when available
 
 ### Cyclist Support
 - Daily segments: 70 km suggested maximum per day
@@ -81,12 +90,20 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 
 ### Road Safety
 - Automatic route safety checking for hikers and cyclists
-- **OpenRouteService integration** (optional): When API key is provided, automatically excludes unsafe roads at routing level
+- **BRouter integration** (recommended for hikers/cyclists): When endpoint is configured, uses BRouter's routing engine with built-in safety rules
+  - **Superior routing**: BRouter has advanced routing profiles specifically designed for hiking and cycling
+  - **Built-in safety rules**: Automatically avoids forbidden highways and unsafe roads at routing level
+  - **Elevation awareness**: Considers elevation data for more accurate routing
+  - **Profile-based routing**: Uses `hiking-mountain` profile for hikers and `trekking` profile for cyclists
+  - **No post-processing needed**: Routes are calculated with safety rules built-in
+  - Configure endpoint: `http://localhost:17777/brouter` (local) or `http://brouter.de/brouter` (public)
+- **OpenRouteService integration** (optional fallback): When API key is provided, automatically excludes unsafe roads at routing level
   - Native exclusion of highways, tollways for hikers/cyclists
-  - No post-processing needed - routes are calculated without unsafe roads
-- **OSRM route optimization** (default): Automatically selects safest route from OSRM alternatives
+  - Used as fallback if BRouter is not configured
+- **OSRM route optimization** (default fallback): Automatically selects safest route from OSRM alternatives
   - Compares multiple route options and picks the one with fewest unsafe segments
   - Adds intermediate waypoints to avoid problematic areas when possible
+  - Used as final fallback if BRouter and OpenRouteService are not available
 - Avoids unsafe road types: motorway, trunk, primary, primary_link, motorway_link, trunk_link
 - Safety warnings displayed on map and in sidebar for any remaining unsafe segments
 - Real-time validation of road types along route
@@ -108,20 +125,34 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 
 ### Routing Services
 
-- **OSRM** - Open Source Routing Machine (default, free, no API key required)
-  - Profile: `driving` (trucks/cars), `foot` (hikers), `cycling` (cyclists)
-  - API: https://router.project-osrm.org/
-  - Used for all vehicle types by default
-  - Includes route optimization for hikers/cyclists to avoid unsafe roads
+- **BRouter** (recommended for hikers/cyclists, optional)
+  - **Best routing engine** for hiking and cycling with built-in safety rules
+  - Elevation-aware routing with customizable profiles
+  - Automatically avoids forbidden highways and unsafe roads at routing level
+  - Profiles: `hiking-mountain` (hikers), `trekking` (cyclists), `car-fast` (cars), `car-eco` (trucks)
+  - **Setup options**:
+    - **Local instance**: Run BRouter server on `http://localhost:17777/brouter`
+      - Download from: https://github.com/abrensch/brouter
+      - Requires Java and routing data segments (download from brouter.de/brouter/segments4/)
+    - **Public instance**: Use `http://brouter.de/brouter` (if available)
+  - API format: `/brouter?lonlats=lon1,lat1|lon2,lat2&profile=...&format=geojson`
+  - **Priority**: Used first for hikers/cyclists if endpoint is configured
+  - Falls back to OpenRouteService or OSRM if not configured or if request fails
 
-- **OpenRouteService** - Alternative routing service (optional, requires free API key)
+- **OpenRouteService** - Alternative routing service (optional fallback, requires free API key)
   - Profile: `driving-car` (trucks/cars), `foot-walking` (hikers), `cycling-regular` (cyclists)
   - API: https://api.openrouteservice.org/v2/directions/
   - **Native road exclusion**: Automatically excludes unsafe roads (motorways, trunk, primary) for hikers/cyclists
   - Free tier: 2000 requests/day
   - Registration: https://openrouteservice.org/dev/#/signup (no credit card required)
-  - When API key is provided, automatically used for hiker/cyclist routes
+  - **Priority**: Used as fallback if BRouter is not configured
   - Falls back to OSRM if API key is not provided or if request fails
+
+- **OSRM** - Open Source Routing Machine (default fallback, free, no API key required)
+  - Profile: `driving` (trucks/cars), `foot` (hikers), `cycling` (cyclists)
+  - API: https://router.project-osrm.org/
+  - **Priority**: Used as final fallback if BRouter and OpenRouteService are not available
+  - Includes route optimization for hikers/cyclists to avoid unsafe roads
 
 ### Other Services
 
@@ -140,10 +171,13 @@ A comprehensive single-file HTML route planner with mandatory rest stops, parkin
 
 1. Open `index.html` in a web browser
 2. Select vehicle type (Truck, Car, Hiker, or Cyclist)
-3. (Optional) Enter OpenRouteService API key for better road avoidance for hikers/cyclists
-   - Get free key at https://openrouteservice.org/dev/#/signup
-   - 2000 requests/day free tier
-   - Key is saved in browser for convenience
+3. **Configure routing service** (recommended for hikers/cyclists):
+   - **BRouter** (best): Enter BRouter endpoint (e.g., `http://localhost:17777/brouter`)
+     - Provides superior routing with built-in safety rules
+     - Elevation-aware routing
+   - **OpenRouteService** (fallback): Enter API key (get free key at openrouteservice.org)
+     - 2000 requests/day free tier
+     - Key is saved in browser for convenience
 4. Enter start and destination addresses (or click on map)
 5. Set departure time
 6. For trucks: Enter total weight, axle load, and number of axles

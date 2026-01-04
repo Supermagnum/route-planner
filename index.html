@@ -514,14 +514,23 @@
                 </select>
                 
                 <div class="routing-service-config" style="margin-top: 15px; padding: 10px; background: #f8f9fa; border-radius: 4px; font-size: 0.9em;">
-                    <label for="orsApiKey" style="display: block; margin-bottom: 5px;">
-                        <strong>OpenRouteService API Key (Optional)</strong>
+                    <label for="brouterEndpoint" style="display: block; margin-bottom: 5px;">
+                        <strong>BRouter Endpoint (Recommended for Hikers/Cyclists)</strong>
+                    </label>
+                    <input type="text" id="brouterEndpoint" placeholder="http://localhost:17777/brouter or http://brouter.de/brouter" 
+                           style="width: 100%; padding: 5px; border: 1px solid #ddd; border-radius: 3px; margin-bottom: 10px;">
+                    <p style="margin: 5px 0 0 0; color: #666; font-size: 0.85em;">
+                        BRouter provides superior routing for hikers/cyclists with built-in safety rules and elevation awareness.
+                        Use local instance (port 17777) or public instance. Leave empty to use OSRM/OpenRouteService.
+                    </p>
+                    <label for="orsApiKey" style="display: block; margin-top: 10px; margin-bottom: 5px;">
+                        <strong>OpenRouteService API Key (Optional - Fallback)</strong>
                     </label>
                     <input type="text" id="orsApiKey" placeholder="Leave empty to use OSRM (free, no key needed)" 
                            style="width: 100%; padding: 5px; border: 1px solid #ddd; border-radius: 3px;">
                     <p style="margin: 5px 0 0 0; color: #666; font-size: 0.85em;">
                         Get free key at <a href="https://openrouteservice.org/dev/#/signup" target="_blank">openrouteservice.org</a> 
-                        (2000 requests/day). Enables automatic exclusion of unsafe roads for hikers/cyclists.
+                        (2000 requests/day). Used as fallback if BRouter is not configured.
                     </p>
                 </div>
             </div>
@@ -654,6 +663,7 @@
         let viaPoints = []; // Array of {lat, lon, name}
         let addedWaterPoints = []; // Track water points to ensure minimum distance
         let addedHuts = []; // Track huts/shelters to ensure minimum distance
+        let brouterEndpoint = ''; // BRouter endpoint URL (optional, recommended for hikers/cyclists)
         let orsApiKey = ''; // OpenRouteService API key (optional)
         let isCalculating = false; // Flag to track if route calculation is in progress
         let calculationId = 0; // Incrementing ID to track calculation generations
@@ -701,6 +711,19 @@
         
         // Initialize truck fields visibility on page load
         handleVehicleTypeChange();
+        
+        // BRouter endpoint configuration
+        document.getElementById('brouterEndpoint').addEventListener('input', function() {
+            brouterEndpoint = this.value.trim();
+            // Store in localStorage for convenience
+            if (brouterEndpoint) {
+                localStorage.setItem('brouterEndpoint', brouterEndpoint);
+            } else {
+                localStorage.removeItem('brouterEndpoint');
+            }
+        });
+        
+        // OpenRouteService API key configuration
         document.getElementById('orsApiKey').addEventListener('input', function() {
             orsApiKey = this.value.trim();
             // Store in localStorage for convenience
@@ -711,7 +734,12 @@
             }
         });
         
-        // Load API key from localStorage if available
+        // Load API keys/endpoints from localStorage if available
+        const savedBrouterEndpoint = localStorage.getItem('brouterEndpoint');
+        if (savedBrouterEndpoint) {
+            brouterEndpoint = savedBrouterEndpoint;
+            document.getElementById('brouterEndpoint').value = brouterEndpoint;
+        }
         const savedApiKey = localStorage.getItem('orsApiKey');
         if (savedApiKey) {
             document.getElementById('orsApiKey').value = savedApiKey;
@@ -1109,6 +1137,97 @@
         }
 
         // Get route from OpenRouteService (supports road exclusions)
+        // Get route from BRouter (supports multiple via points)
+        // BRouter provides superior routing for hikers/cyclists with built-in safety rules
+        // Supports multiple via points - all via points are included in order: start -> via1 -> via2 -> ... -> viaN -> destination
+        async function getRouteBRouter(startLat, startLon, destLat, destLon, viaPoints = [], vehicleType) {
+            try {
+                // Map vehicle types to BRouter profiles
+                let profile;
+                if (vehicleType === 'hiker') {
+                    profile = 'hiking-mountain'; // or 'trekking' - uses BRouter's hiking rules
+                } else if (vehicleType === 'bike') {
+                    profile = 'trekking'; // BRouter's cycling profile with elevation awareness
+                } else if (vehicleType === 'truck') {
+                    profile = 'car-eco'; // Fuel-efficient routing for trucks
+                } else {
+                    profile = 'car-fast'; // Fast routing for cars
+                }
+                
+                // Build lonlats string: lon1,lat1|lon2,lat2|...|lonN,latN
+                // Order: start -> all via points (in order) -> destination
+                let lonlats = `${startLon},${startLat}`;
+                viaPoints.forEach(via => {
+                    lonlats += `|${via.lon},${via.lat}`;
+                });
+                lonlats += `|${destLon},${destLat}`;
+                
+                // BRouter API format: /brouter?lonlats=...&profile=...&format=geojson&alternativeidx=0
+                const url = `${brouterEndpoint}/brouter?lonlats=${encodeURIComponent(lonlats)}&profile=${profile}&format=geojson&alternativeidx=0`;
+                console.log(`BRouter Request: ${url.substring(0, 200)}... (${viaPoints.length} via points, profile: ${profile})`);
+                
+                const response = await fetch(url);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                
+                // Convert BRouter format to OSRM-like format for compatibility
+                // BRouter returns GeoJSON FeatureCollection with route as LineString
+                if (data.type === 'FeatureCollection' && data.features && data.features.length > 0) {
+                    const routeFeature = data.features.find(f => f.geometry.type === 'LineString');
+                    if (routeFeature) {
+                        // Extract coordinates (BRouter uses [lon, lat] format)
+                        const coordinates = routeFeature.geometry.coordinates;
+                        
+                        // Calculate distance and duration from route properties
+                        // BRouter may include distance/duration in properties
+                        let distance = 0;
+                        let duration = 0;
+                        
+                        if (routeFeature.properties) {
+                            distance = routeFeature.properties.distance || 0; // meters
+                            duration = routeFeature.properties.duration || 0; // seconds
+                        } else {
+                            // Calculate distance from coordinates if not provided
+                            for (let i = 0; i < coordinates.length - 1; i++) {
+                                const [lon1, lat1] = coordinates[i];
+                                const [lon2, lat2] = coordinates[i + 1];
+                                distance += haversineDistance(lat1, lon1, lat2, lon2) * 1000;
+                            }
+                            // Estimate duration (rough estimate: 5 km/h for hikers, 15 km/h for cyclists, 50 km/h for cars)
+                            const avgSpeed = vehicleType === 'hiker' ? 5 : (vehicleType === 'bike' ? 15 : 50); // km/h
+                            duration = (distance / 1000) / avgSpeed * 3600; // seconds
+                        }
+                        
+                        return {
+                            code: 'Ok',
+                            routes: [{
+                                geometry: {
+                                    type: 'LineString',
+                                    coordinates: coordinates
+                                },
+                                distance: distance,
+                                duration: duration,
+                                legs: [{
+                                    distance: distance,
+                                    duration: duration
+                                }]
+                            }]
+                        };
+                    } else {
+                        throw new Error('No route geometry found in BRouter response');
+                    }
+                } else {
+                    throw new Error('Invalid BRouter response format');
+                }
+            } catch (error) {
+                throw new Error(`BRouter routing failed: ${error.message}`);
+            }
+        }
+
         // Supports multiple via points - all via points are included in order: start -> via1 -> via2 -> ... -> viaN -> destination
         async function getRouteOpenRouteService(startLat, startLon, destLat, destLon, viaPoints = [], vehicleType) {
             try {
@@ -1231,7 +1350,26 @@
         // Find safer route by checking alternatives
         async function findSaferRoute(startLat, startLon, destLat, destLon, viaPoints, vehicleType) {
             try {
-                // If OpenRouteService API key is provided, use it (automatically excludes unsafe roads)
+                // Priority 1: Use BRouter if endpoint is configured (best for hikers/cyclists with built-in safety rules)
+                if (brouterEndpoint && (vehicleType === 'hiker' || vehicleType === 'bike')) {
+                    try {
+                        const brouterRoute = await getRouteBRouter(startLat, startLon, destLat, destLon, viaPoints, vehicleType);
+                        // BRouter has built-in safety rules, but still validate
+                        const warnings = await checkRouteSafety(brouterRoute, vehicleType);
+                        if (warnings.length === 0) {
+                            console.log('BRouter route is safe, using it');
+                            return brouterRoute; // Perfect route with BRouter's safety rules
+                        }
+                        // If there are unsafe segments, log but still use BRouter route (it's usually better)
+                        console.log(`BRouter route has ${warnings.length} unsafe segments (may be false positives or unavoidable)`);
+                        return brouterRoute; // Use BRouter route anyway (it has better rules)
+                    } catch (brouterError) {
+                        console.warn('BRouter failed, falling back to other services:', brouterError);
+                        // Fall through to OpenRouteService or OSRM
+                    }
+                }
+                
+                // Priority 2: If OpenRouteService API key is provided, use it (automatically excludes unsafe roads)
                 if (orsApiKey && (vehicleType === 'hiker' || vehicleType === 'bike')) {
                     try {
                         const orsRoute = await getRouteOpenRouteService(startLat, startLon, destLat, destLon, viaPoints, vehicleType);
@@ -1652,27 +1790,18 @@
                 const allowedRoads = ['cycleway', 'path', 'track', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street'];
                 return allowedRoads.includes(roadType.highway);
             } else if (vehicleType === 'hiker') {
-                // HIKER FILTERS - Priority-based road safety
+                // HIKER FILTERS - Correct priority order (highest to lowest priority):
+                // 1. highway=path
+                // 2. highway=footway
+                // 3. highway=pedestrian
+                // 4. highway=bridleway
+                // 5. highway=steps
+                // 6. highway=living_street
+                // 7. highway=track
+                // 8. highway=service
                 
-                // Priority 1 - Dedicated hiking paths (always allowed)
-                const priority1Roads = ['footway', 'path', 'track', 'steps', 'bridleway'];
-                if (priority1Roads.includes(roadType.highway)) {
-                    return true;
-                }
-                
-                // Priority 2 - Roads with hiking/foot designations
-                if (roadType.hiking === 'yes' || roadType.foot === 'designated') {
-                    return true;
-                }
-                
-                // Priority 3 - Minor roads (only if foot is not explicitly forbidden)
-                const priority3Roads = ['secondary', 'tertiary', 'unclassified', 'residential'];
-                if (priority3Roads.includes(roadType.highway)) {
-                    return roadType.foot !== 'no';
-                }
-                
-                // All other roads are not allowed for hikers
-                return false;
+                const allowedHighways = ['path', 'footway', 'pedestrian', 'bridleway', 'steps', 'living_street', 'track', 'service'];
+                return allowedHighways.includes(roadType.highway);
             }
 
             return true; // Trucks and cars can use all roads
@@ -1734,9 +1863,9 @@
                     // Check if this is a forbidden highway (for hikers)
                     const isForbiddenHighway = vehicleType === 'hiker' && forbiddenHighways.includes(segment.roadType);
                     
-                    // For hikers with forbidden highways, prioritize finding paths/tracks
-                    if (isForbiddenHighway) {
-                        console.log(`Found forbidden highway ${segment.roadType} for hiker, searching for paths/tracks...`);
+                    // For hikers, prioritize finding allowed roads in correct priority order
+                    if (vehicleType === 'hiker') {
+                        console.log(`Found unsafe road ${segment.roadType} for hiker, searching for priority roads...`);
                         
                         // Find point BEFORE the unsafe segment (go back along route)
                         let beforePoint = null;
@@ -1748,54 +1877,37 @@
                             beforePoint = { lat: beforeLat, lon: beforeLon };
                         }
                         
-                        // Search for Priority 1 roads (paths/tracks) in increasing radius
+                        // Search for priority roads in increasing radius
                         // Start from before point if available, otherwise from unsafe segment
                         const searchLat = beforePoint ? beforePoint.lat : segment.lat;
                         const searchLon = beforePoint ? beforePoint.lon : segment.lon;
                         
                         for (const radius of [500, 1000, 2000, 3000, 5000]) {  // Increased max radius
-                            // Request paths/tracks to be prioritized
+                            // Request priority roads (sorted by priority order)
                             const safeRoads = await findSafeRoadsNearby(searchLat, searchLon, radius, vehicleType, true);
                             
                             if (safeRoads.length > 0) {
-                                // safeRoads are already sorted with Priority 1 roads first
-                                // Prefer Priority 1 roads (paths/tracks), but consider distance
+                                // safeRoads are already sorted by priority (highest priority first)
+                                // Use the highest priority road available
                                 let bestRoad = safeRoads[0];
                                 let minDist = haversineDistance(searchLat, searchLon, safeRoads[0].lat, safeRoads[0].lon);
                                 
-                                // If first road is Priority 1, use it (already sorted)
-                                if (safeRoads[0].isPriority1) {
-                                    bestRoad = safeRoads[0];
-                                } else {
-                                    // Look for closest Priority 1 road, accept if within 2x distance (more lenient)
-                                    for (const road of safeRoads) {
-                                        if (road.isPriority1) {
-                                            const dist = haversineDistance(searchLat, searchLon, road.lat, road.lon);
-                                            if (dist < minDist * 2) {  // More lenient for Priority 1
-                                                minDist = dist;
-                                                bestRoad = road;
-                                                break; // Found a Priority 1 road, use it
-                                            }
-                                        }
-                                    }
-                                    
-                                    // If no Priority 1 found within reasonable distance, use closest safe road
-                                    if (!bestRoad.isPriority1) {
-                                        for (const road of safeRoads) {
-                                            const dist = haversineDistance(searchLat, searchLon, road.lat, road.lon);
-                                            if (dist < minDist) {
-                                                minDist = dist;
-                                                bestRoad = road;
-                                            }
-                                        }
+                                // Prefer highest priority roads, but accept slightly lower priority if much closer
+                                for (const road of safeRoads) {
+                                    const dist = haversineDistance(searchLat, searchLon, road.lat, road.lon);
+                                    // If this road is higher priority (lower index) or same priority but closer, use it
+                                    if (road.priorityIndex < bestRoad.priorityIndex || 
+                                        (road.priorityIndex === bestRoad.priorityIndex && dist < minDist)) {
+                                        minDist = dist;
+                                        bestRoad = road;
                                     }
                                 }
                                 
                                 avoidanceWaypoints.push({
                                     lat: bestRoad.lat,
                                     lon: bestRoad.lon,
-                                    name: bestRoad.isPriority1 
-                                        ? `Force path/track (avoid ${segment.roadType})` 
+                                    name: vehicleType === 'hiker'
+                                        ? `Force priority road (${bestRoad.highway}) to avoid ${segment.roadType}` 
                                         : `Avoid ${segment.roadType}`
                                 });
                                 break; // Found a safe road, move to next segment
@@ -1934,7 +2046,10 @@
 
                 const data = await response.json();
                 const safeRoads = [];
-                const priority1Roads = ['footway', 'path', 'track', 'steps', 'bridleway'];
+                
+                // Hiker road priority order (highest to lowest):
+                // 1. path, 2. footway, 3. pedestrian, 4. bridleway, 5. steps, 6. living_street, 7. track, 8. service
+                const hikerPriorityOrder = ['path', 'footway', 'pedestrian', 'bridleway', 'steps', 'living_street', 'track', 'service'];
 
                 for (const element of data.elements || []) {
                     if (element.type !== 'way' || !element.tags) continue;
@@ -1948,30 +2063,38 @@
                     
                     if (isRoadSafe(roadType, vehicleType)) {
                         if (element.center) {
-                            // Check if this is a Priority 1 road (path/track) for hikers
-                            const isPriority1 = preferPathsTracks && vehicleType === 'hiker' && (
-                                priority1Roads.includes(roadType.highway) ||
-                                roadType.hiking === 'yes' ||
-                                roadType.foot === 'designated'
-                            );
+                            // Calculate priority index for hikers (lower index = higher priority)
+                            let priorityIndex = 999; // Default: lowest priority
+                            if (vehicleType === 'hiker' && preferPathsTracks) {
+                                const index = hikerPriorityOrder.indexOf(roadType.highway);
+                                if (index !== -1) {
+                                    priorityIndex = index;
+                                }
+                            }
                             
                             safeRoads.push({
                                 lat: element.center.lat,
                                 lon: element.center.lon,
                                 name: roadType.name,
                                 highway: roadType.highway,
-                                isPriority1: isPriority1 || false
+                                priorityIndex: priorityIndex,
+                                isPriority1: priorityIndex < 5 // Top 5 priorities (path, footway, pedestrian, bridleway, steps)
                             });
                         }
                     }
                 }
 
-                // If preferPathsTracks, sort to prioritize Priority 1 roads
+                // Sort by priority (lower index = higher priority) for hikers
                 if (preferPathsTracks && vehicleType === 'hiker') {
                     safeRoads.sort((a, b) => {
-                        if (a.isPriority1 && !b.isPriority1) return -1;
-                        if (!a.isPriority1 && b.isPriority1) return 1;
-                        return 0; // Keep original order for same priority
+                        // First sort by priority index (lower = higher priority)
+                        if (a.priorityIndex !== b.priorityIndex) {
+                            return a.priorityIndex - b.priorityIndex;
+                        }
+                        // If same priority, sort by distance (closer first)
+                        const distA = haversineDistance(lat, lon, a.lat, a.lon);
+                        const distB = haversineDistance(lat, lon, b.lat, b.lon);
+                        return distA - distB;
                     });
                 }
 
