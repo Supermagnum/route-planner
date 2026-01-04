@@ -514,23 +514,14 @@
                 </select>
                 
                 <div class="routing-service-config" style="margin-top: 15px; padding: 10px; background: #f8f9fa; border-radius: 4px; font-size: 0.9em;">
-                    <label for="brouterEndpoint" style="display: block; margin-bottom: 5px;">
-                        <strong>BRouter Endpoint (Recommended for Hikers/Cyclists)</strong>
-                    </label>
-                    <input type="text" id="brouterEndpoint" placeholder="http://localhost:17777/brouter or http://brouter.de/brouter" 
-                           style="width: 100%; padding: 5px; border: 1px solid #ddd; border-radius: 3px; margin-bottom: 10px;">
-                    <p style="margin: 5px 0 0 0; color: #666; font-size: 0.85em;">
-                        BRouter provides superior routing for hikers/cyclists with built-in safety rules and elevation awareness.
-                        Use local instance (port 17777) or public instance. Leave empty to use OSRM/OpenRouteService.
-                    </p>
-                    <label for="orsApiKey" style="display: block; margin-top: 10px; margin-bottom: 5px;">
-                        <strong>OpenRouteService API Key (Optional - Fallback)</strong>
+                    <label for="orsApiKey" style="display: block; margin-bottom: 5px;">
+                        <strong>OpenRouteService API Key (Optional)</strong>
                     </label>
                     <input type="text" id="orsApiKey" placeholder="Leave empty to use OSRM (free, no key needed)" 
                            style="width: 100%; padding: 5px; border: 1px solid #ddd; border-radius: 3px;">
                     <p style="margin: 5px 0 0 0; color: #666; font-size: 0.85em;">
                         Get free key at <a href="https://openrouteservice.org/dev/#/signup" target="_blank">openrouteservice.org</a> 
-                        (2000 requests/day). Used as fallback if BRouter is not configured.
+                        (2000 requests/day). Enables automatic exclusion of unsafe roads for hikers/cyclists.
                     </p>
                 </div>
             </div>
@@ -663,7 +654,6 @@
         let viaPoints = []; // Array of {lat, lon, name}
         let addedWaterPoints = []; // Track water points to ensure minimum distance
         let addedHuts = []; // Track huts/shelters to ensure minimum distance
-        let brouterEndpoint = ''; // BRouter endpoint URL (optional, recommended for hikers/cyclists)
         let orsApiKey = ''; // OpenRouteService API key (optional)
         let isCalculating = false; // Flag to track if route calculation is in progress
         let calculationId = 0; // Incrementing ID to track calculation generations
@@ -712,17 +702,6 @@
         // Initialize truck fields visibility on page load
         handleVehicleTypeChange();
         
-        // BRouter endpoint configuration
-        document.getElementById('brouterEndpoint').addEventListener('input', function() {
-            brouterEndpoint = this.value.trim();
-            // Store in localStorage for convenience
-            if (brouterEndpoint) {
-                localStorage.setItem('brouterEndpoint', brouterEndpoint);
-            } else {
-                localStorage.removeItem('brouterEndpoint');
-            }
-        });
-        
         // OpenRouteService API key configuration
         document.getElementById('orsApiKey').addEventListener('input', function() {
             orsApiKey = this.value.trim();
@@ -734,12 +713,7 @@
             }
         });
         
-        // Load API keys/endpoints from localStorage if available
-        const savedBrouterEndpoint = localStorage.getItem('brouterEndpoint');
-        if (savedBrouterEndpoint) {
-            brouterEndpoint = savedBrouterEndpoint;
-            document.getElementById('brouterEndpoint').value = brouterEndpoint;
-        }
+        // Load API keys from localStorage if available
         const savedApiKey = localStorage.getItem('orsApiKey');
         if (savedApiKey) {
             document.getElementById('orsApiKey').value = savedApiKey;
@@ -1137,97 +1111,6 @@
         }
 
         // Get route from OpenRouteService (supports road exclusions)
-        // Get route from BRouter (supports multiple via points)
-        // BRouter provides superior routing for hikers/cyclists with built-in safety rules
-        // Supports multiple via points - all via points are included in order: start -> via1 -> via2 -> ... -> viaN -> destination
-        async function getRouteBRouter(startLat, startLon, destLat, destLon, viaPoints = [], vehicleType) {
-            try {
-                // Map vehicle types to BRouter profiles
-                let profile;
-                if (vehicleType === 'hiker') {
-                    profile = 'hiking-mountain'; // or 'trekking' - uses BRouter's hiking rules
-                } else if (vehicleType === 'bike') {
-                    profile = 'trekking'; // BRouter's cycling profile with elevation awareness
-                } else if (vehicleType === 'truck') {
-                    profile = 'car-eco'; // Fuel-efficient routing for trucks
-                } else {
-                    profile = 'car-fast'; // Fast routing for cars
-                }
-                
-                // Build lonlats string: lon1,lat1|lon2,lat2|...|lonN,latN
-                // Order: start -> all via points (in order) -> destination
-                let lonlats = `${startLon},${startLat}`;
-                viaPoints.forEach(via => {
-                    lonlats += `|${via.lon},${via.lat}`;
-                });
-                lonlats += `|${destLon},${destLat}`;
-                
-                // BRouter API format: /brouter?lonlats=...&profile=...&format=geojson&alternativeidx=0
-                const url = `${brouterEndpoint}/brouter?lonlats=${encodeURIComponent(lonlats)}&profile=${profile}&format=geojson&alternativeidx=0`;
-                console.log(`BRouter Request: ${url.substring(0, 200)}... (${viaPoints.length} via points, profile: ${profile})`);
-                
-                const response = await fetch(url);
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                }
-                
-                const data = await response.json();
-                
-                // Convert BRouter format to OSRM-like format for compatibility
-                // BRouter returns GeoJSON FeatureCollection with route as LineString
-                if (data.type === 'FeatureCollection' && data.features && data.features.length > 0) {
-                    const routeFeature = data.features.find(f => f.geometry.type === 'LineString');
-                    if (routeFeature) {
-                        // Extract coordinates (BRouter uses [lon, lat] format)
-                        const coordinates = routeFeature.geometry.coordinates;
-                        
-                        // Calculate distance and duration from route properties
-                        // BRouter may include distance/duration in properties
-                        let distance = 0;
-                        let duration = 0;
-                        
-                        if (routeFeature.properties) {
-                            distance = routeFeature.properties.distance || 0; // meters
-                            duration = routeFeature.properties.duration || 0; // seconds
-                        } else {
-                            // Calculate distance from coordinates if not provided
-                            for (let i = 0; i < coordinates.length - 1; i++) {
-                                const [lon1, lat1] = coordinates[i];
-                                const [lon2, lat2] = coordinates[i + 1];
-                                distance += haversineDistance(lat1, lon1, lat2, lon2) * 1000;
-                            }
-                            // Estimate duration (rough estimate: 5 km/h for hikers, 15 km/h for cyclists, 50 km/h for cars)
-                            const avgSpeed = vehicleType === 'hiker' ? 5 : (vehicleType === 'bike' ? 15 : 50); // km/h
-                            duration = (distance / 1000) / avgSpeed * 3600; // seconds
-                        }
-                        
-                        return {
-                            code: 'Ok',
-                            routes: [{
-                                geometry: {
-                                    type: 'LineString',
-                                    coordinates: coordinates
-                                },
-                                distance: distance,
-                                duration: duration,
-                                legs: [{
-                                    distance: distance,
-                                    duration: duration
-                                }]
-                            }]
-                        };
-                    } else {
-                        throw new Error('No route geometry found in BRouter response');
-                    }
-                } else {
-                    throw new Error('Invalid BRouter response format');
-                }
-            } catch (error) {
-                throw new Error(`BRouter routing failed: ${error.message}`);
-            }
-        }
-
         // Supports multiple via points - all via points are included in order: start -> via1 -> via2 -> ... -> viaN -> destination
         async function getRouteOpenRouteService(startLat, startLon, destLat, destLon, viaPoints = [], vehicleType) {
             try {
@@ -1350,26 +1233,7 @@
         // Find safer route by checking alternatives
         async function findSaferRoute(startLat, startLon, destLat, destLon, viaPoints, vehicleType) {
             try {
-                // Priority 1: Use BRouter if endpoint is configured (best for hikers/cyclists with built-in safety rules)
-                if (brouterEndpoint && (vehicleType === 'hiker' || vehicleType === 'bike')) {
-                    try {
-                        const brouterRoute = await getRouteBRouter(startLat, startLon, destLat, destLon, viaPoints, vehicleType);
-                        // BRouter has built-in safety rules, but still validate
-                        const warnings = await checkRouteSafety(brouterRoute, vehicleType);
-                        if (warnings.length === 0) {
-                            console.log('BRouter route is safe, using it');
-                            return brouterRoute; // Perfect route with BRouter's safety rules
-                        }
-                        // If there are unsafe segments, log but still use BRouter route (it's usually better)
-                        console.log(`BRouter route has ${warnings.length} unsafe segments (may be false positives or unavoidable)`);
-                        return brouterRoute; // Use BRouter route anyway (it has better rules)
-                    } catch (brouterError) {
-                        console.warn('BRouter failed, falling back to other services:', brouterError);
-                        // Fall through to OpenRouteService or OSRM
-                    }
-                }
-                
-                // Priority 2: If OpenRouteService API key is provided, use it (automatically excludes unsafe roads)
+                // If OpenRouteService API key is provided, use it (automatically excludes unsafe roads)
                 if (orsApiKey && (vehicleType === 'hiker' || vehicleType === 'bike')) {
                     try {
                         const orsRoute = await getRouteOpenRouteService(startLat, startLon, destLat, destLon, viaPoints, vehicleType);
@@ -1409,7 +1273,7 @@
                     if (warnings.length > 0) {
                         // For hikers: check for forbidden highways
                         if (vehicleType === 'hiker') {
-                            const forbiddenHighways = ['motorway', 'trunk', 'primary', 'primary_link', 'motorway_link', 'trunk_link'];
+                            const forbiddenHighways = ['motorway', 'motorway_link', 'trunk', 'trunk_link', 'via_ferrata', 'raceway', 'primary', 'secondary', 'tertiary', 'unclassified'];
                             const hasForbiddenHighway = warnings.some(w => forbiddenHighways.includes(w.roadType));
                             
                             if (hasForbiddenHighway) {
@@ -1455,7 +1319,7 @@
                         if (warnings.length > 0) {
                             // For hikers: check for forbidden highways
                             if (vehicleType === 'hiker') {
-                                const forbiddenHighways = ['motorway', 'trunk', 'primary', 'primary_link', 'motorway_link', 'trunk_link'];
+                                const forbiddenHighways = ['motorway', 'motorway_link', 'trunk', 'trunk_link', 'via_ferrata', 'raceway', 'primary', 'secondary', 'tertiary', 'unclassified'];
                                 const hasForbiddenHighway = warnings.some(w => forbiddenHighways.includes(w.roadType));
                                 
                                 if (hasForbiddenHighway) {
@@ -1539,7 +1403,7 @@
                 // For hikers: Reject routes with forbidden highways (trunk, motorway, primary)
                 // These are absolutely not allowed and we must find an alternative
                 if (vehicleType === 'hiker' && bestRoute.unsafeCount > 0) {
-                    const forbiddenHighways = ['motorway', 'trunk', 'primary', 'primary_link', 'motorway_link', 'trunk_link'];
+                    const forbiddenHighways = ['motorway', 'motorway_link', 'trunk', 'trunk_link', 'via_ferrata', 'raceway', 'primary', 'secondary', 'tertiary', 'unclassified'];
                     const hasForbiddenHighway = bestRoute.warnings.some(w => forbiddenHighways.includes(w.roadType));
                     
                     if (hasForbiddenHighway) {
@@ -1756,11 +1620,21 @@
                     if (element.type === 'way' && highway) {
                         const foot = element.tags.foot;
                         const hiking = element.tags.hiking;
+                        const bicycle = element.tags.bicycle;
+                        const access = element.tags.access;
+                        const sacScale = element.tags.sac_scale;
+                        const mtbScale = element.tags['mtb:scale'];
+                        const incline = element.tags.incline;
                         
                         roadTypes.push({
                             highway: highway,
                             foot: foot,
                             hiking: hiking,
+                            bicycle: bicycle,
+                            access: access,
+                            sac_scale: sacScale,
+                            mtb_scale: mtbScale,
+                            incline: incline,
                             name: element.tags.name || 'Unnamed road'
                         });
                     }
@@ -1780,17 +1654,16 @@
                 return true;
             }
             
-            const unsafeRoads = ['motorway', 'trunk', 'primary', 'primary_link', 'motorway_link', 'trunk_link'];
+            // Forbidden roads for hikers (absolutely not allowed)
+            const hikerForbiddenRoads = ['motorway', 'motorway_link', 'trunk', 'trunk_link', 'via_ferrata', 'raceway', 'primary', 'secondary', 'tertiary', 'unclassified'];
             
-            if (unsafeRoads.includes(roadType.highway)) {
-                return false;
-            }
-
-            if (vehicleType === 'bike') {
-                const allowedRoads = ['cycleway', 'path', 'track', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street'];
-                return allowedRoads.includes(roadType.highway);
-            } else if (vehicleType === 'hiker') {
-                // HIKER FILTERS - Correct priority order (highest to lowest priority):
+            if (vehicleType === 'hiker') {
+                // Check if this road is forbidden for hikers
+                if (hikerForbiddenRoads.includes(roadType.highway)) {
+                    return false;
+                }
+                
+                // HIKER ALLOWED ROADS (priority order, highest to lowest):
                 // 1. highway=path
                 // 2. highway=footway
                 // 3. highway=pedestrian
@@ -1799,9 +1672,122 @@
                 // 6. highway=living_street
                 // 7. highway=track
                 // 8. highway=service
+                // 9. highway=residential
                 
-                const allowedHighways = ['path', 'footway', 'pedestrian', 'bridleway', 'steps', 'living_street', 'track', 'service'];
+                const allowedHighways = ['path', 'footway', 'pedestrian', 'bridleway', 'steps', 'living_street', 'track', 'service', 'residential'];
                 return allowedHighways.includes(roadType.highway);
+            }
+            
+            // For other vehicle types, check general unsafe roads
+            const unsafeRoads = ['motorway', 'trunk', 'primary', 'primary_link', 'motorway_link', 'trunk_link'];
+            if (unsafeRoads.includes(roadType.highway)) {
+                return false;
+            }
+
+            if (vehicleType === 'bike') {
+                // CYCLIST FORBIDDEN CONDITIONS - Absolutely not allowed
+                
+                // 1. Forbidden highway types (unconditionally)
+                const absolutelyForbiddenHighways = ['motorway', 'motorway_link', 'trunk', 'trunk_link', 'via_ferrata', 'raceway', 'steps'];
+                if (absolutelyForbiddenHighways.includes(roadType.highway)) {
+                    return false;
+                }
+                
+                // 2. Forbidden highway types (with exceptions)
+                // footway - forbidden UNLESS bicycle=yes
+                if (roadType.highway === 'footway') {
+                    if (roadType.bicycle !== 'yes') {
+                        return false;
+                    }
+                }
+                
+                // pedestrian - forbidden UNLESS bicycle=yes
+                if (roadType.highway === 'pedestrian') {
+                    if (roadType.bicycle !== 'yes') {
+                        return false;
+                    }
+                }
+                
+                // bridleway - forbidden UNLESS bicycle=yes or bicycle=designated
+                if (roadType.highway === 'bridleway') {
+                    if (roadType.bicycle !== 'yes' && roadType.bicycle !== 'designated') {
+                        return false;
+                    }
+                }
+                
+                // primary - forbidden UNLESS it has cycle infrastructure (bicycle=yes/designated/permissive)
+                if (roadType.highway === 'primary') {
+                    // Check if there's explicit bicycle permission or cycle infrastructure
+                    // If bicycle is not explicitly allowed, reject
+                    if (roadType.bicycle !== 'yes' && roadType.bicycle !== 'designated' && roadType.bicycle !== 'permissive') {
+                        return false;
+                    }
+                }
+                
+                // 3. Tag-based restrictions
+                // bicycle=no - absolutely forbidden
+                if (roadType.bicycle === 'no') {
+                    return false;
+                }
+                
+                // bicycle=dismount - forbidden (requires dismounting)
+                if (roadType.bicycle === 'dismount') {
+                    return false;
+                }
+                
+                // access=no - forbidden
+                if (roadType.access === 'no') {
+                    return false;
+                }
+                
+                // access=private - forbidden
+                if (roadType.access === 'private') {
+                    return false;
+                }
+                
+                // 4. Scale-based restrictions
+                // sac_scale=mountain_hiking or higher (too rough for bikes)
+                const sacScaleLevels = ['hiking', 'mountain_hiking', 'demanding_mountain_hiking', 'alpine_hiking', 'demanding_alpine_hiking', 'difficult_alpine_hiking'];
+                if (roadType.sac_scale) {
+                    const sacIndex = sacScaleLevels.indexOf(roadType.sac_scale);
+                    const mountainHikingIndex = sacScaleLevels.indexOf('mountain_hiking');
+                    if (sacIndex >= mountainHikingIndex && sacIndex !== -1) {
+                        return false; // Too rough for bikes
+                    }
+                }
+                
+                // mtb:scale=5+ (extreme mountain biking only)
+                if (roadType.mtb_scale) {
+                    const mtbScale = parseInt(roadType.mtb_scale);
+                    if (!isNaN(mtbScale) && mtbScale >= 5) {
+                        return false; // Too extreme for regular cycling
+                    }
+                }
+                
+                // 5. Incline restrictions
+                // incline>15% (too steep for most cyclists)
+                if (roadType.incline) {
+                    // Parse incline (can be in various formats: "15%", "15", "up", etc.)
+                    const inclineStr = String(roadType.incline).trim();
+                    // Extract numeric value if it contains %
+                    const match = inclineStr.match(/(\d+(?:\.\d+)?)\s*%/);
+                    if (match) {
+                        const inclinePercent = parseFloat(match[1]);
+                        if (inclinePercent > 15) {
+                            return false; // Too steep
+                        }
+                    } else {
+                        // Try parsing as plain number
+                        const inclineNum = parseFloat(inclineStr);
+                        if (!isNaN(inclineNum) && inclineNum > 15) {
+                            return false; // Too steep
+                        }
+                    }
+                }
+                
+                // If we passed all checks, check if it's in the allowed list
+                const allowedRoads = ['cycleway', 'path', 'track', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street'];
+                return allowedRoads.includes(roadType.highway);
             }
 
             return true; // Trucks and cars can use all roads
@@ -1849,7 +1835,7 @@
                 const processedLocations = new Set();
                 
                 // For hikers, prioritize finding paths/tracks (Priority 1 roads)
-                const forbiddenHighways = ['motorway', 'trunk', 'primary', 'primary_link', 'motorway_link', 'trunk_link'];
+                const forbiddenHighways = ['motorway', 'motorway_link', 'trunk', 'trunk_link', 'via_ferrata', 'raceway', 'primary', 'secondary', 'tertiary', 'unclassified'];
                 const priority1Roads = ['footway', 'path', 'track', 'steps', 'bridleway'];
                 
                 // Get route coordinates to find points BEFORE unsafe segments
@@ -2048,8 +2034,8 @@
                 const safeRoads = [];
                 
                 // Hiker road priority order (highest to lowest):
-                // 1. path, 2. footway, 3. pedestrian, 4. bridleway, 5. steps, 6. living_street, 7. track, 8. service
-                const hikerPriorityOrder = ['path', 'footway', 'pedestrian', 'bridleway', 'steps', 'living_street', 'track', 'service'];
+                // 1. path, 2. footway, 3. pedestrian, 4. bridleway, 5. steps, 6. living_street, 7. track, 8. service, 9. residential
+                const hikerPriorityOrder = ['path', 'footway', 'pedestrian', 'bridleway', 'steps', 'living_street', 'track', 'service', 'residential'];
 
                 for (const element of data.elements || []) {
                     if (element.type !== 'way' || !element.tags) continue;
@@ -2122,7 +2108,7 @@
             const checkedPoints = new Set();
             
             // Forbidden highways that are absolutely not allowed for hikers
-            const forbiddenHighways = ['motorway', 'trunk', 'primary', 'primary_link', 'motorway_link', 'trunk_link'];
+            const forbiddenHighways = ['motorway', 'motorway_link', 'trunk', 'trunk_link', 'via_ferrata', 'raceway', 'primary', 'secondary', 'tertiary', 'unclassified'];
 
             for (let i = 0; i < coordinates.length; i += sampleInterval) {
                 const [lon, lat] = coordinates[i];
@@ -3083,7 +3069,7 @@
             }
 
             const unsafeRoadTypes = [...new Set(warnings.map(w => w.roadType))];
-            const forbiddenHighways = ['motorway', 'trunk', 'primary', 'primary_link', 'motorway_link', 'trunk_link'];
+            const forbiddenHighways = ['motorway', 'motorway_link', 'trunk', 'trunk_link', 'via_ferrata', 'raceway', 'primary', 'secondary', 'tertiary', 'unclassified'];
             const hasForbiddenHighways = warnings.some(w => w.isForbidden || (vehicleType === 'hiker' && forbiddenHighways.includes(w.roadType)));
             
             // Show prominent warning for forbidden highways (especially for hikers)
@@ -3339,7 +3325,7 @@
                     const routeValidation = await checkRouteSafety(route, vehicleType);
                     console.log(`Route validation found ${routeValidation.length} unsafe segments:`, routeValidation.map(w => w.roadType));
                     
-                    const forbiddenHighways = ['motorway', 'trunk', 'primary', 'primary_link', 'motorway_link', 'trunk_link'];
+                    const forbiddenHighways = ['motorway', 'motorway_link', 'trunk', 'trunk_link', 'via_ferrata', 'raceway', 'primary', 'secondary', 'tertiary', 'unclassified'];
                     const hasForbiddenHighway = routeValidation.some(w => forbiddenHighways.includes(w.roadType));
                     
                     if (hasForbiddenHighway) {
